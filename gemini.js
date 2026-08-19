@@ -1,23 +1,34 @@
-﻿/**
+/**
 Gemini API Engine
 Features:
-Dynamic model fetching
-Multi-API key fallback cycling
-Model priority fallback on quota / errors
-Audio, Image, Video, File base64 encoding
-Real-time SSE Word-by-Word Streaming
-Context Caching integration
-Isolated Translation Runner
+- Full & Up-to-Date Gemini Model Catalog
+- Multi-Page API Model Auto-Discovery
+- Multi-API Key Fallback Cycling
+- Model Priority Fallback on Quota / Errors
+- Real-time SSE Word-by-Word Streaming
+- Base64 Encoding for Multimodal Attachments
+- Isolated Persian Translation Runner
 */
 const GeminiAPI = {
   baseUrl: "https://generativelanguage.googleapis.com/v1beta",
   
+  // Comprehensive, up-to-date default models
   defaultModels: [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-2.0-pro-exp-02-05",
+    "gemini-2.0-flash-thinking-exp-01-21",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-exp-1206",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro"
+    "gemini-2.0-flash-lite-preview-02-05",
+    "gemini-1.5-pro-latest",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-flash-8b-latest",
+    "learnlm-1.5-pro-experimental"
   ],
 
   getApiKeys() {
@@ -33,7 +44,10 @@ const GeminiAPI = {
     if (stored) {
       try {
         const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Merge with defaultModels to guarantee newly introduced models aren't omitted
+          return Array.from(new Set([...parsed, ...this.defaultModels]));
+        }
       } catch (e) {}
     }
     return this.defaultModels;
@@ -44,27 +58,68 @@ const GeminiAPI = {
   },
 
   /**
-  Fetch available models from Gemini endpoint using first working API key
+  Fetch all available models from Gemini endpoint with pagination & filtering
   */
   async fetchAvailableModels() {
     const keys = this.getApiKeys();
-    if (keys.length === 0) return this.defaultModels;
+    if (keys.length === 0) {
+      console.log("[GeminiAPI] No API keys configured. Using default models catalog.");
+      return this.defaultModels;
+    }
 
-    for (const key of keys) {
+    for (let kIdx = 0; kIdx < keys.length; kIdx++) {
+      const key = keys[kIdx];
       try {
-        const res = await fetch(`${this.baseUrl}/models?key=${key}`);
-        if (!res.ok) continue;
-        const data = await res.json();
-        if (data.models && Array.isArray(data.models)) {
-          const valid = data.models
-            .filter(m => m.supportedGenerationMethods?.includes("generateContent"))
-            .map(m => m.name.replace("models/", ""));
-          if (valid.length > 0) return valid;
+        console.log(`[GeminiAPI] Fetching full models list from Google API using Key #${kIdx + 1}...`);
+        let fetchedModels = [];
+        let pageToken = "";
+        let pageCount = 0;
+
+        do {
+          const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+          const url = `${this.baseUrl}/models?pageSize=100&key=${key}${pageParam}`;
+          const res = await fetch(url);
+          if (!res.ok) {
+            console.warn(`[GeminiAPI] Models list HTTP error on Key #${kIdx + 1}: ${res.status}`);
+            break;
+          }
+
+          const data = await res.json();
+          if (data.models && Array.isArray(data.models)) {
+            const valid = data.models
+              .filter(m => {
+                const methods = m.supportedGenerationMethods || [];
+                const name = (m.name || "").replace("models/", "").toLowerCase();
+                // Filter for generateContent chat models, exclude embeddings / aqa / imagen
+                return (
+                  methods.includes("generateContent") &&
+                  !name.includes("embedding") &&
+                  !name.includes("aqa") &&
+                  !name.includes("imagen") &&
+                  !name.includes("veo") &&
+                  !name.includes("text-bison") &&
+                  !name.includes("chat-bison")
+                );
+              })
+              .map(m => m.name.replace("models/", ""));
+            fetchedModels.push(...valid);
+          }
+
+          pageToken = data.nextPageToken || "";
+          pageCount++;
+        } while (pageToken && pageCount < 5);
+
+        if (fetchedModels.length > 0) {
+          const uniqueModels = Array.from(new Set([...fetchedModels, ...this.defaultModels]));
+          console.log(`[GeminiAPI] Successfully fetched ${fetchedModels.length} models from API. Total models: ${uniqueModels.length}`);
+          return uniqueModels;
         }
       } catch (e) {
-        console.warn("Error fetching models with key:", e);
+        console.warn(`[GeminiAPI] Error fetching live models with Key #${kIdx + 1}:`, e);
       }
     }
+
+    console.log("[GeminiAPI] Using complete default models list.");
     return this.defaultModels;
   },
 
@@ -326,7 +381,7 @@ const GeminiAPI = {
   /**
   Translate Text to Fluent Persian (Farsi) Outside the Chat History Flow
   */
-  async translateToFarsi(textToTranslate, activeModel = "gemini-2.5-flash") {
+  async translateToFarsi(textToTranslate, activeModel = "gemini-2.0-flash") {
     const keys = this.getApiKeys();
     if (keys.length === 0) {
       throw new Error("No API key available for translation.");
