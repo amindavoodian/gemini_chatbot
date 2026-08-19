@@ -1,0 +1,280 @@
+﻿<!DOCTYPE html>
+<html lang="en" dir="ltr" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Gemini Chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Vazirmatn:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.8/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app-layout" id="appLayout">
+
+<!-- Sidebar Overlay (Mobile) -->
+<div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+<!-- Sidebar -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-brand">
+      <i class="fa-solid fa-wand-magic-sparkles brand-icon"></i>
+      <span>Gemini Chat</span>
+    </div>
+    <button class="btn-icon mobile-only" id="btnCloseSidebar" title="Close Sidebar">
+      <i class="fa-solid fa-xmark"></i>
+    </button>
+  </div>
+
+  <!-- Conversation History List -->
+  <div class="history-list" id="historyList">
+    <div class="history-empty" id="historyEmpty">No conversations yet</div>
+  </div>
+
+  <!-- New Chat Button Placed Below History Section -->
+  <div class="sidebar-new-chat-container">
+    <button class="btn btn-new-chat" id="btnNewChat" title="Start a new chat">
+      <i class="fa-solid fa-plus"></i>
+      <span>New Chat</span>
+    </button>
+  </div>
+
+  <!-- Font Size Scaler Control -->
+  <div class="sidebar-font-control">
+    <div class="font-control-label">
+      <i class="fa-solid fa-font"></i>
+      <span>Font Size</span>
+    </div>
+    <div class="font-control-actions">
+      <button class="btn-font-size" id="btnFontDecrease" title="Decrease font size">
+        <i class="fa-solid fa-minus"></i>
+      </button>
+      <span class="font-size-indicator" id="fontSizeIndicator">15px</span>
+      <button class="btn-font-size" id="btnFontIncrease" title="Increase font size">
+        <i class="fa-solid fa-plus"></i>
+      </button>
+      <button class="btn-font-size btn-font-reset" id="btnFontReset" title="Reset font size">
+        <i class="fa-solid fa-rotate-left"></i>
+      </button>
+    </div>
+  </div>
+
+  <!-- Sidebar Footer Actions -->
+  <div class="sidebar-footer">
+    <button class="btn-footer" id="btnThemeToggle" title="Toggle Light / Dark theme">
+      <i class="fa-solid fa-sun" id="themeToggleIcon"></i>
+      <span id="themeToggleText">Light Mode</span>
+    </button>
+    <button class="btn-footer" id="btnRTLToggle" title="Toggle RTL / LTR layout">
+      <i class="fa-solid fa-right-left"></i>
+      <span id="rtlToggleText">RTL Mode</span>
+    </button>
+    <button class="btn-footer" id="btnOpenSettings" title="Settings & API Keys">
+      <i class="fa-solid fa-sliders"></i>
+      <span>Settings</span>
+    </button>
+    <button class="btn-footer text-danger" id="btnClearAllHistory" title="Clear all chats & files">
+      <i class="fa-solid fa-trash-can"></i>
+      <span>Clear History</span>
+    </button>
+  </div>
+</aside>
+
+<!-- Main Chat Container -->
+<main class="chat-main">
+  
+  <!-- Top Navbar -->
+  <header class="chat-header">
+    <div class="header-left">
+      <button class="btn-icon" id="btnToggleSidebar" title="Toggle Sidebar">
+        <i class="fa-solid fa-bars"></i>
+      </button>
+      
+      <button class="btn-icon" id="btnHeaderNewChat" title="New Chat">
+        <i class="fa-solid fa-plus"></i>
+      </button>
+
+      <!-- Dynamic Model Dropdown -->
+      <div class="model-select-wrapper">
+        <i class="fa-solid fa-sparkles model-icon"></i>
+        <select id="modelSelect" title="Select Gemini Model">
+          <option value="" disabled selected>Loading models...</option>
+        </select>
+        <i class="fa-solid fa-chevron-down select-arrow"></i>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <span class="status-badge" id="statusBadge"><i class="fa-solid fa-circle"></i> Ready</span>
+      <button class="btn-icon" id="btnHeaderRTL" title="Toggle RTL / LTR">
+        <i class="fa-solid fa-globe"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Message Flow Container -->
+  <div class="chat-container" id="chatContainer">
+    
+    <!-- Welcome Screen (When chat is empty) -->
+    <div class="welcome-screen" id="welcomeScreen">
+      <div class="welcome-icon">
+        <i class="fa-solid fa-wand-magic-sparkles"></i>
+      </div>
+      <h2>What can I help with today?</h2>
+      <p class="welcome-subtext">Multimodal Gemini AI with automated model fallback & cloud storage</p>
+      <div class="suggestion-grid">
+        <button class="suggestion-card" data-prompt="Explain quantum computing like I am 10 years old.">
+          <i class="fa-solid fa-lightbulb"></i>
+          <span>Explain quantum computing simply</span>
+        </button>
+        <button class="suggestion-card" data-prompt="Analyze and summarize the code I am going to share.">
+          <i class="fa-solid fa-code"></i>
+          <span>Analyze & debug code</span>
+        </button>
+        <button class="suggestion-card" data-prompt="Create a 7-day high productivity morning routine.">
+          <i class="fa-solid fa-calendar-check"></i>
+          <span>Productive morning routine</span>
+        </button>
+        <button class="suggestion-card" data-prompt="Translate and polish this text into professional English.">
+          <i class="fa-solid fa-language"></i>
+          <span>Translate & polish text</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Messages List -->
+    <div class="messages-list" id="messagesList"></div>
+  </div>
+
+  <!-- Bottom Chat Input Bar -->
+  <footer class="chat-input-area">
+    
+    <!-- Attachment Previews -->
+    <div class="attachment-preview-container" id="attachmentPreviews"></div>
+
+    <!-- Notification Banner / Fallback Alerts -->
+    <div class="notification-banner" id="notificationBanner"></div>
+
+    <div class="input-box-wrapper">
+      
+      <!-- Hidden File Input for Image, Video, Audio, Doc -->
+      <input type="file" id="fileInput" multiple accept="image/*,video/*,audio/*,application/pdf,text/*,.doc,.docx" style="display: none;" />
+      
+      <button class="btn-icon-input" id="btnAttach" title="Attach image, video, audio or file">
+        <i class="fa-solid fa-paperclip"></i>
+      </button>
+
+      <textarea
+        id="chatTextarea"
+        rows="1"
+        placeholder="Ask Gemini anything... (Shift+Enter for newline)"
+        autocomplete="off"
+      ></textarea>
+
+      <button class="btn-send" id="btnSend" disabled title="Send message">
+        <i class="fa-solid fa-arrow-up"></i>
+      </button>
+    </div>
+  </footer>
+</main>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-backdrop" id="settingsModal">
+<div class="modal-card">
+  <div class="modal-header">
+    <h3><i class="fa-solid fa-sliders"></i> Chatbot Settings</h3>
+    <button class="btn-icon" id="btnCloseSettings"><i class="fa-solid fa-xmark"></i></button>
+  </div>
+
+  <div class="modal-body">
+    <!-- API Keys Configuration -->
+    <div class="settings-group">
+      <label class="settings-label">
+        Gemini API Keys <span class="label-hint">(1 per line — auto switches if rate limited/down)</span>
+      </label>
+      <textarea
+        id="settingApiKeys"
+        class="settings-textarea"
+        rows="3"
+        placeholder="AIzaSyA...\nAIzaSyB..."
+      ></textarea>
+    </div>
+
+    <!-- Model Fallback Priority Order -->
+    <div class="settings-group">
+      <div class="settings-group-header">
+        <label class="settings-label">Model Fallback Priority Order</label>
+        <button class="btn-sm" id="btnRefreshModels"><i class="fa-solid fa-rotate"></i> Reload Models</button>
+      </div>
+      <p class="settings-desc">Grab and drag with your finger or pointer to reorder priority. Top models are tried first.</p>
+      <div class="priority-list" id="priorityListContainer"></div>
+    </div>
+
+    <!-- Toggle Controls with Fixed Light/Dark Switch Styling -->
+    <div class="settings-group">
+      <div class="setting-toggle-row">
+        <div class="toggle-text-col">
+          <div class="toggle-title">Light Theme</div>
+          <div class="toggle-desc">Switch between Dark and Light mode</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="settingThemeToggle" />
+          <span class="slider round"></span>
+        </label>
+      </div>
+
+      <div class="setting-toggle-row">
+        <div class="toggle-text-col">
+          <div class="toggle-title">Streaming Responses</div>
+          <div class="toggle-desc">Display text live word-by-word as it generates</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="settingStreaming" checked />
+          <span class="slider round"></span>
+        </label>
+      </div>
+
+      <div class="setting-toggle-row">
+        <div class="toggle-text-col">
+          <div class="toggle-title">Gemini Context Caching</div>
+          <div class="toggle-desc">Cache token history for large conversations</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="settingCaching" checked />
+          <span class="slider round"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Database Information -->
+    <div class="settings-group db-info-box">
+      <div class="db-status-item">
+        <i class="fa-solid fa-database"></i> <strong>Turso SQLite:</strong> Connected (Cloud chats)
+      </div>
+      <div class="db-status-item">
+        <i class="fa-solid fa-cloud-arrow-up"></i> <strong>Supabase Storage:</strong> Connected (Media files)
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-footer">
+    <button class="btn btn-secondary" id="btnCancelSettings">Cancel</button>
+    <button class="btn btn-primary" id="btnSaveSettings">Save Settings</button>
+  </div>
+</div>
+</div>
+
+<script src="turso.js"></script>
+<script src="supabase.js"></script>
+<script src="gemini.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
