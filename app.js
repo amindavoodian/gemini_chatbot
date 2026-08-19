@@ -429,7 +429,7 @@ voice recording, background synchronization, and minimal UI feedback windows.
     applyDirection(next);
   }
 
-  // --- MODEL MANAGEMENT, SYNCHRONIZATION & MANDATORY LOCK ---
+  // --- MODEL MANAGEMENT & CLEAN DROPDOWN ---
   async function refreshModelsList() {
     availableModels = await GeminiAPI.fetchAvailableModels();
 
@@ -446,13 +446,13 @@ voice recording, background synchronization, and minimal UI feedback windows.
 
     const autoOpt = document.createElement("option");
     autoOpt.value = "auto";
-    autoOpt.textContent = `Auto Fallback (Priority #1: ${priorityList[0] || "Default"})`;
+    autoOpt.textContent = "Auto Fallback";
     modelSelect.appendChild(autoOpt);
 
-    priorityList.forEach((model, idx) => {
+    priorityList.forEach((model) => {
       const opt = document.createElement("option");
       opt.value = model;
-      opt.textContent = `#${idx + 1} ${model} (Lock)`;
+      opt.textContent = model;
       modelSelect.appendChild(opt);
     });
 
@@ -478,7 +478,7 @@ voice recording, background synchronization, and minimal UI feedback windows.
       lockedModel = val;
       localStorage.setItem("gemini_locked_model", val);
       modelSelectWrapper.classList.add("is-locked");
-      showNotification(`Locked model to: ${val}. Auto-fallback disabled.`, "warning", 3500);
+      showNotification(`Locked model to: ${val}.`, "warning", 3000);
     }
   });
 
@@ -1019,17 +1019,19 @@ voice recording, background synchronization, and minimal UI feedback windows.
       filesHtml += `</div>`;
     }
 
-    // Model Header at top with gemini-ai.svg
+    // Model Header Icon: ONLY shown when content is displayed (NOT while thinking)
+    let headerNode = null;
     if (role === "model") {
-      const headerNode = document.createElement("div");
+      headerNode = document.createElement("div");
       headerNode.className = "model-row-header";
       headerNode.innerHTML = `
         <div class="model-avatar-compact">
           <img src="gemini-ai.svg" alt="Gemini" class="gemini-icon model-avatar-icon" />
         </div>
-        <span class="model-name-label">Gemini</span>
       `;
-      row.appendChild(headerNode);
+      if (!isStreaming || (content && content.trim())) {
+        row.appendChild(headerNode);
+      }
     }
 
     const bubble = document.createElement("div");
@@ -1038,10 +1040,12 @@ voice recording, background synchronization, and minimal UI feedback windows.
     let renderedText = "";
     if (role === "model") {
       if (isStreaming && !content) {
+        // Minimal 3-dot thinking indicator without logo
         renderedText = `
           <div class="gemini-thinking-indicator">
-            <img src="gemini-ai.svg" alt="Gemini" class="gemini-icon gemini-spin-icon-md" />
-            <span>Thinking...</span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
           </div>
         `;
       } else {
@@ -1055,18 +1059,19 @@ voice recording, background synchronization, and minimal UI feedback windows.
       renderedText = escapeHtml(content);
     }
 
+    // Action footer with minimal muted Translate text (only when answer is showed)
     let actionFooterHtml = "";
     if (role === "model") {
+      const showFooter = !isStreaming || (content && content.trim().length > 0);
       actionFooterHtml = `
-        <div class="model-action-bar">
+        <div class="model-action-bar" style="${showFooter ? '' : 'display: none;'}">
           <div class="model-action-left">
-            <button class="btn-translate-farsi" title="Rewrite & translate this answer into Persian">
-              <i class="fa-solid fa-language"></i>
-              <span>Translate to Farsi</span>
+            <button class="btn-translate-farsi" title="Translate answer to Persian">
+              <span>Translate</span>
             </button>
           </div>
           <div class="model-attribution">
-            ${modelUsed ? `<img src="gemini-ai.svg" alt="Gemini" class="gemini-icon model-attr-icon" /> <span>${escapeHtml(modelUsed)}</span>` : ""}
+            ${modelUsed ? `<span>${escapeHtml(modelUsed)}</span>` : ""}
           </div>
         </div>
       `;
@@ -1097,7 +1102,7 @@ voice recording, background synchronization, and minimal UI feedback windows.
     messagesList.appendChild(row);
     scrollToBottom();
 
-    return { row, bubble };
+    return { row, bubble, headerNode };
   }
 
   function setupCodeBlockHeaders(container) {
@@ -1122,7 +1127,7 @@ voice recording, background synchronization, and minimal UI feedback windows.
     });
   }
 
-  // --- TRANSLATE TO FARSI ACTION ---
+  // --- TRANSLATE ACTION (MUTED MINIMAL TEXT TRIGGER) ---
   async function handleTranslateClick(bubble, rawContent, msgId, btnTranslate) {
     const slot = bubble.querySelector(".translation-container-slot");
     if (!slot) return;
@@ -1145,7 +1150,7 @@ voice recording, background synchronization, and minimal UI feedback windows.
 
     const originalBtnHtml = btnTranslate.innerHTML;
     btnTranslate.classList.add("loading");
-    btnTranslate.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Translating...</span>`;
+    btnTranslate.innerHTML = `<i class="fa-solid fa-spinner fa-spin" style="font-size: 10px;"></i> <span>Translating...</span>`;
 
     try {
       const activeModel = lockedModel || modelSelect.value || "gemini-2.5-flash";
@@ -1190,7 +1195,7 @@ voice recording, background synchronization, and minimal UI feedback windows.
     slotElement.innerHTML = `
       <div class="message-translation-box" dir="rtl">
         <div class="translation-header">
-          <span class="badge-translated"><i class="fa-solid fa-check"></i> ترجمه</span>
+          <span class="badge-translated">ترجمه</span>
           <button class="btn-copy-translation" title="کپی ترجمه"><i class="fa-regular fa-copy"></i> کپی</button>
         </div>
         <div class="translation-content" dir="rtl">${sanitizedHtml}</div>
@@ -1250,8 +1255,6 @@ voice recording, background synchronization, and minimal UI feedback windows.
       btnMic.innerHTML = `<i class="fa-solid fa-stop"></i>`;
     }
     chatTextarea.placeholder = "Listening... Speak now...";
-    statusBadge.innerHTML = `<i class="fa-solid fa-microphone fa-beat" style="color: var(--danger-color);"></i> Listening...`;
-    statusBadge.classList.add("busy");
 
     baseTextBeforeRecording = chatTextarea.value;
     if (baseTextBeforeRecording && !baseTextBeforeRecording.endsWith(" ")) {
@@ -1359,9 +1362,9 @@ voice recording, background synchronization, and minimal UI feedback windows.
         console.warn("Microphone access issue:", micErr);
         if (!recognitionStarted) {
           if (micErr.name === "NotAllowedError" || micErr.name === "PermissionDeniedError") {
-            showNotification("Microphone access was denied. Please allow microphone permissions in your browser.", "warning", 5000);
+            showNotification("Microphone access was denied. Please allow microphone permissions.", "warning", 4000);
           } else {
-            showNotification("Microphone error: " + (micErr.message || "Unable to access microphone"), "warning", 5000);
+            showNotification("Microphone error: " + (micErr.message || "Unable to access microphone"), "warning", 4000);
           }
           stopAudioRecording();
         }
@@ -1379,8 +1382,6 @@ voice recording, background synchronization, and minimal UI feedback windows.
       btnMic.innerHTML = `<i class="fa-solid fa-microphone"></i>`;
     }
     chatTextarea.placeholder = "Type a message...";
-    statusBadge.innerHTML = `<i class="fa-solid fa-circle"></i> Ready`;
-    statusBadge.classList.remove("busy");
 
     if (speechRecognizer) {
       try {
@@ -1484,15 +1485,25 @@ voice recording, background synchronization, and minimal UI feedback windows.
       createdAt: now
     });
 
-    // 5. Kick off AI Generation with Spinning Gemini Icon
+    // 5. Kick off AI Generation
+    const aiMsgId = "msg_" + (now + 1);
+    await executeGeneration({
+      prompt,
+      filesToPassToGemini,
+      aiMsgId,
+      selectedModel,
+      isStreaming
+    });
+  }
+
+  // --- GENERATION EXECUTION WITH RETRY SUPPORT ---
+  async function executeGeneration({ prompt, filesToPassToGemini, aiMsgId, selectedModel, isStreaming }) {
     isGenerating = true;
-    statusBadge.innerHTML = `<img src="gemini-ai.svg" alt="Gemini" class="gemini-icon gemini-spin-icon" /> Generating...`;
-    statusBadge.classList.add("busy");
     hideNotification();
 
-    const aiMsgId = "msg_" + (now + 1);
     const aiMessagePlaceholder = appendMessageUI("model", "", [], "", true, aiMsgId);
     const contentContainer = aiMessagePlaceholder.bubble.querySelector(".message-content");
+    const actionBar = aiMessagePlaceholder.bubble.querySelector(".model-action-bar");
 
     let finalAssistantText = "";
     let actualModelUsed = lockedModel || selectedModel;
@@ -1512,6 +1523,12 @@ voice recording, background synchronization, and minimal UI feedback windows.
         isStreaming: isStreaming,
         onChunk: (chunk, fullText) => {
           finalAssistantText = fullText;
+
+          // Ensure icon is shown next to the answer when response appears
+          if (!aiMessagePlaceholder.row.querySelector(".model-row-header") && aiMessagePlaceholder.headerNode) {
+            aiMessagePlaceholder.row.insertBefore(aiMessagePlaceholder.headerNode, aiMessagePlaceholder.bubble);
+          }
+
           try {
             contentContainer.innerHTML = DOMPurify.sanitize(marked.parse(fullText));
           } catch (e) {
@@ -1521,16 +1538,26 @@ voice recording, background synchronization, and minimal UI feedback windows.
           scrollToBottom();
         },
         onFallbackNotice: (msg) => {
-          showNotification(msg, "warning", 4000);
+          showNotification(msg, "warning", 3000);
         }
       });
 
       finalAssistantText = result.text;
       actualModelUsed = result.modelUsed;
 
+      // Show icon next to answer if not already inserted
+      if (!aiMessagePlaceholder.row.querySelector(".model-row-header") && aiMessagePlaceholder.headerNode) {
+        aiMessagePlaceholder.row.insertBefore(aiMessagePlaceholder.headerNode, aiMessagePlaceholder.bubble);
+      }
+
+      // Show minimal Translate action
+      if (actionBar) {
+        actionBar.style.display = "flex";
+      }
+
       const attr = aiMessagePlaceholder.bubble.querySelector(".model-attribution");
       if (attr && actualModelUsed) {
-        attr.innerHTML = `<img src="gemini-ai.svg" alt="Gemini" class="gemini-icon model-attr-icon" /> <span>${escapeHtml(actualModelUsed)}</span>`;
+        attr.innerHTML = `<span>${escapeHtml(actualModelUsed)}</span>`;
       }
 
       const btnTranslate = aiMessagePlaceholder.bubble.querySelector(".btn-translate-farsi");
@@ -1555,12 +1582,36 @@ voice recording, background synchronization, and minimal UI feedback windows.
       });
 
     } catch (err) {
-      contentContainer.innerHTML = `<span style="color: var(--danger-color);"><i class="fa-solid fa-circle-exclamation"></i> ${escapeHtml(err.message)}</span>`;
+      // If generation fails, show error and provide minimal retry button (no duplicate DB re-upload)
+      contentContainer.innerHTML = `
+        <div style="color: var(--danger-color); font-size: 13px;">
+          <i class="fa-solid fa-circle-exclamation"></i> ${escapeHtml(err.message)}
+        </div>
+        <button class="btn-retry-send" title="Retry sending message">
+          <i class="fa-solid fa-rotate-right"></i> <span>Retry</span>
+        </button>
+      `;
+
+      const btnRetry = contentContainer.querySelector(".btn-retry-send");
+      if (btnRetry) {
+        btnRetry.addEventListener("click", async () => {
+          btnRetry.disabled = true;
+          btnRetry.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Retrying...</span>`;
+          
+          // Remove the failed placeholder and retry without re-inserting user message/uploading files
+          aiMessagePlaceholder.row.remove();
+          await executeGeneration({
+            prompt,
+            filesToPassToGemini,
+            aiMsgId: "msg_" + Date.now(),
+            selectedModel: modelSelect.value || "auto",
+            isStreaming
+          });
+        });
+      }
     } finally {
       isGenerating = false;
       btnSend.disabled = false;
-      statusBadge.innerHTML = `<i class="fa-solid fa-circle"></i> Ready`;
-      statusBadge.classList.remove("busy");
       hideNotification();
       scrollToBottom();
 
@@ -1624,10 +1675,10 @@ voice recording, background synchronization, and minimal UI feedback windows.
   }
 
   // --- NOTIFICATION BANNER WITH AUTO-HIDE ---
-  function showNotification(msg, type = "warning", autoHideMs = 4000) {
+  function showNotification(msg, type = "warning", autoHideMs = 3000) {
     if (notificationTimer) clearTimeout(notificationTimer);
     notificationBanner.className = `notification-banner ${type}`;
-    notificationBannerContent.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> <span>${escapeHtml(msg)}</span>`;
+    notificationBannerContent.innerHTML = `<span>${escapeHtml(msg)}</span>`;
     notificationBanner.style.display = "flex";
 
     if (autoHideMs > 0) {

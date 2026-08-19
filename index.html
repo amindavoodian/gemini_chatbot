@@ -81,7 +81,7 @@
       <span id="themeToggleText">Light Mode</span>
     </button>
     <button class="btn-footer" id="btnRTLToggle" title="Toggle RTL / LTR layout">
-      <i class="fa-solid fa-right-left"></i>
+      <i class="fa-solid fa-arrows-left-right"></i>
       <span id="rtlToggleText">RTL Mode</span>
     </button>
     <button class="btn-footer" id="btnOpenSettings" title="Settings & API Keys">
@@ -111,7 +111,6 @@
 
       <!-- Dynamic Model Dropdown with Lock Indicator -->
       <div class="model-select-wrapper" id="modelSelectWrapper">
-        <img src="gemini-ai.svg" alt="Gemini" class="gemini-icon" />
         <i class="fa-solid fa-lock model-lock-badge" title="Model Locked (No Auto-Fallback)"></i>
         <select id="modelSelect" title="Select Gemini Model">
           <option value="" disabled selected>Loading models...</option>
@@ -121,9 +120,9 @@
     </div>
 
     <div class="header-right">
-      <span class="status-badge" id="statusBadge"><i class="fa-solid fa-circle"></i> Ready</span>
+      <span class="status-dot online" id="statusBadge" title="Database Connected"></span>
       <button class="btn-icon" id="btnHeaderRTL" title="Toggle RTL / LTR">
-        <i class="fa-solid fa-globe"></i>
+        <i class="fa-solid fa-arrows-left-right"></i>
       </button>
     </div>
   </header>
