@@ -1,4 +1,4 @@
-﻿/**
+/**
 Main Application Controller
 Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & Font Scaling
 */
@@ -182,24 +182,33 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
   }
 
   // --- MODEL MANAGEMENT & PRIORITY ---
-  async function refreshModelsList() {
-    modelSelect.innerHTML = "<option disabled selected>Loading models...</option>";
+  async function refreshModelsList(isManualReload = false) {
+    modelSelect.innerHTML = "<option disabled selected>Loading latest models...</option>";
     availableModels = await GeminiAPI.fetchAvailableModels();
 
-    const existingPriority = GeminiAPI.getModelPriority();
-    const mergedPriority = [...new Set([...existingPriority, ...availableModels])];
-    GeminiAPI.saveModelPriority(mergedPriority);
+    const storedPriority = GeminiAPI.getModelPriority();
+    
+    // Combine and ensure complete catalog
+    const allModels = Array.from(new Set([...storedPriority, ...availableModels]));
+    const finalPriority = isManualReload
+      ? Array.from(new Set([...availableModels, ...storedPriority]))
+      : allModels;
 
+    GeminiAPI.saveModelPriority(finalPriority);
+
+    const prevSelected = modelSelect.value;
     modelSelect.innerHTML = "";
-    mergedPriority.forEach(model => {
+    finalPriority.forEach(model => {
       const opt = document.createElement("option");
       opt.value = model;
       opt.textContent = model;
       modelSelect.appendChild(opt);
     });
 
-    if (mergedPriority.length > 0) {
-      modelSelect.value = mergedPriority[0];
+    if (prevSelected && finalPriority.includes(prevSelected)) {
+      modelSelect.value = prevSelected;
+    } else if (finalPriority.length > 0) {
+      modelSelect.value = finalPriority[0];
     }
     renderPrioritySettingsList();
   }
@@ -525,7 +534,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
       filesHtml += `</div>`;
     }
 
-    // Model Header at top (No model badge here)
+    // Model Header at top
     if (role === "model") {
       const headerNode = document.createElement("div");
       headerNode.className = "model-row-header";
@@ -550,7 +559,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
       renderedText = escapeHtml(content);
     }
 
-    // Model Action & Attribution Footer strictly underneath answer
+    // Model Action & Attribution Footer
     let actionFooterHtml = "";
     if (role === "model") {
       actionFooterHtml = `
@@ -575,7 +584,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
 
     setupCodeBlockHeaders(bubble);
 
-    // If existing translation exists from DB, render it immediately
+    // Render existing translation if present
     if (existingTranslation) {
       const slot = bubble.querySelector(".translation-container-slot");
       if (slot) renderTranslationBox(slot, existingTranslation);
@@ -633,10 +642,10 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     btnTranslate.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Translating...</span>`;
 
     try {
-      const activeModel = modelSelect.value || "gemini-2.5-flash";
+      const activeModel = modelSelect.value || "gemini-2.0-flash";
       const farsiTranslation = await GeminiAPI.translateToFarsi(rawContent, activeModel);
 
-      // Render Persian text below original message
+      // Render Persian translation
       renderTranslationBox(slot, farsiTranslation);
 
       // Persist in Turso Database
@@ -644,7 +653,6 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
         await TursoDB.updateMessageTranslation(msgId, farsiTranslation);
       }
 
-      // Restore original button appearance without creating redundant badges
       btnTranslate.innerHTML = originalBtnHtml;
     } catch (err) {
       alert("Translation failed: " + err.message);
@@ -697,7 +705,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     const prompt = chatTextarea.value.trim();
     if ((!prompt && attachedFiles.length === 0) || isGenerating) return;
 
-    const selectedModel = modelSelect.value || "gemini-2.5-flash";
+    const selectedModel = modelSelect.value || "gemini-2.0-flash";
     const isStreaming = localStorage.getItem("gemini_streaming_enabled") !== "false";
 
     // 1. Ensure Conversation exists in Turso
@@ -790,7 +798,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
         attr.innerHTML = `<i class="fa-solid fa-sparkles"></i> ${escapeHtml(actualModelUsed)}`;
       }
 
-      // Setup dynamic translation button click for newly generated response
+      // Setup translation button click
       const btnTranslate = aiMessagePlaceholder.bubble.querySelector(".btn-translate-farsi");
       if (btnTranslate) {
         btnTranslate.addEventListener("click", () => handleTranslateClick(aiMessagePlaceholder.bubble, finalAssistantText, aiMsgId, btnTranslate));
@@ -918,12 +926,12 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     localStorage.setItem("gemini_caching_enabled", settingCaching.checked ? "true" : "false");
     applyTheme(settingThemeToggle.checked ? "light" : "dark");
     closeSettingsModal();
-    await refreshModelsList();
+    await refreshModelsList(true);
   });
 
   btnRefreshModels.addEventListener("click", async () => {
     localStorage.setItem("gemini_api_keys", settingApiKeys.value.trim());
-    await refreshModelsList();
+    await refreshModelsList(true);
   });
 
   // --- GENERAL BUTTON LISTENERS ---
