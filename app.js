@@ -1100,7 +1100,6 @@ voice recording, background synchronization, and minimal UI feedback windows.
 
     row.appendChild(bubble);
     messagesList.appendChild(row);
-    scrollToBottom();
 
     return { row, bubble, headerNode };
   }
@@ -1180,7 +1179,6 @@ voice recording, background synchronization, and minimal UI feedback windows.
       btnTranslate.innerHTML = originalBtnHtml;
     } finally {
       btnTranslate.classList.remove("loading");
-      scrollToBottom();
     }
   }
 
@@ -1475,6 +1473,7 @@ voice recording, background synchronization, and minimal UI feedback windows.
     appendMessageUI("user", prompt, immediateUIFiles, "", false, userMsgId);
     currentMessages.push({ role: "user", content: prompt, files: filesJson, id: userMsgId });
     saveCachedMessages(currentConversationId, currentMessages);
+    scrollToBottom();
 
     SyncQueue.enqueue({
       type: "SAVE_USER_MSG",
@@ -1535,7 +1534,6 @@ voice recording, background synchronization, and minimal UI feedback windows.
             contentContainer.textContent = fullText;
           }
           setupCodeBlockHeaders(contentContainer);
-          scrollToBottom();
         },
         onFallbackNotice: (msg) => {
           showNotification(msg, "warning", 3000);
@@ -1613,7 +1611,6 @@ voice recording, background synchronization, and minimal UI feedback windows.
       isGenerating = false;
       btnSend.disabled = false;
       hideNotification();
-      scrollToBottom();
 
       SyncQueue.process();
     }
