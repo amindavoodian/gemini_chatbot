@@ -4,10 +4,18 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>Gemini Chat</title>
+
+<!-- SPA & App Icons -->
+<link rel="icon" type="image/png" href="appIcon.png" />
+<link rel="apple-touch-icon" href="appIcon.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Vazirmatn:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -25,25 +33,25 @@
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-header">
     <div class="sidebar-brand">
-      <i class="fa-solid fa-wand-magic-sparkles brand-icon"></i>
-      <span>Gemini Chat</span>
+      <img src="gemini-ai.svg" alt="Gemini" class="gemini-icon gemini-brand-icon" />
+      <span>Gemini</span>
     </div>
     <button class="btn-icon mobile-only" id="btnCloseSidebar" title="Close Sidebar">
       <i class="fa-solid fa-xmark"></i>
     </button>
   </div>
 
-  <!-- Conversation History List -->
-  <div class="history-list" id="historyList">
-    <div class="history-empty" id="historyEmpty">No conversations yet</div>
-  </div>
-
-  <!-- New Chat Button Placed Below History Section -->
+  <!-- New Chat Action -->
   <div class="sidebar-new-chat-container">
     <button class="btn btn-new-chat" id="btnNewChat" title="Start a new chat">
       <i class="fa-solid fa-plus"></i>
       <span>New Chat</span>
     </button>
+  </div>
+
+  <!-- Conversation History List -->
+  <div class="history-list" id="historyList">
+    <div class="history-empty" id="historyEmpty">No conversations yet</div>
   </div>
 
   <!-- Font Size Scaler Control -->
@@ -101,9 +109,10 @@
         <i class="fa-solid fa-plus"></i>
       </button>
 
-      <!-- Dynamic Model Dropdown -->
-      <div class="model-select-wrapper">
-        <i class="fa-solid fa-sparkles model-icon"></i>
+      <!-- Dynamic Model Dropdown with Lock Indicator -->
+      <div class="model-select-wrapper" id="modelSelectWrapper">
+        <img src="gemini-ai.svg" alt="Gemini" class="gemini-icon" />
+        <i class="fa-solid fa-lock model-lock-badge" title="Model Locked (No Auto-Fallback)"></i>
         <select id="modelSelect" title="Select Gemini Model">
           <option value="" disabled selected>Loading models...</option>
         </select>
@@ -125,10 +134,10 @@
     <!-- Welcome Screen (When chat is empty) -->
     <div class="welcome-screen" id="welcomeScreen">
       <div class="welcome-icon">
-        <i class="fa-solid fa-wand-magic-sparkles"></i>
+        <img src="gemini-ai.svg" alt="Gemini" class="gemini-icon welcome-gemini-icon" />
       </div>
       <h2>What can I help with today?</h2>
-      <p class="welcome-subtext">Multimodal Gemini AI with automated model fallback & cloud storage</p>
+      <p class="welcome-subtext">Multimodal Gemini AI with automated model fallback & cloud persistence</p>
       <div class="suggestion-grid">
         <button class="suggestion-card" data-prompt="Explain quantum computing like I am 10 years old.">
           <i class="fa-solid fa-lightbulb"></i>
@@ -153,17 +162,19 @@
     <div class="messages-list" id="messagesList"></div>
   </div>
 
-  <!-- Bottom Chat Input Bar -->
+  <!-- Bottom Chat Input Dock -->
   <footer class="chat-input-area">
     
     <!-- Attachment Previews -->
     <div class="attachment-preview-container" id="attachmentPreviews"></div>
 
     <!-- Notification Banner / Fallback Alerts -->
-    <div class="notification-banner" id="notificationBanner"></div>
+    <div class="notification-banner" id="notificationBanner">
+      <div class="notification-banner-content" id="notificationBannerContent"></div>
+      <button class="notification-close-btn" id="btnCloseNotification"><i class="fa-solid fa-xmark"></i></button>
+    </div>
 
     <div class="input-box-wrapper">
-      
       <!-- Hidden File Input for Image, Video, Audio, Doc -->
       <input type="file" id="fileInput" multiple accept="image/*,video/*,audio/*,application/pdf,text/*,.doc,.docx" style="display: none;" />
       
@@ -174,9 +185,14 @@
       <textarea
         id="chatTextarea"
         rows="1"
-        placeholder="Ask Gemini anything... (Shift+Enter for newline)"
+        placeholder="Type a message..."
         autocomplete="off"
       ></textarea>
+
+      <!-- Microphone / Audio Input Button -->
+      <button class="btn-icon-input" id="btnMic" title="Voice input (Speech to text / Audio recording)">
+        <i class="fa-solid fa-microphone"></i>
+      </button>
 
       <button class="btn-send" id="btnSend" disabled title="Send message">
         <i class="fa-solid fa-arrow-up"></i>
@@ -186,11 +202,57 @@
 </main>
 </div>
 
+<!-- Minimal Deletion Process Modal -->
+<div class="modal-backdrop delete-modal-backdrop" id="deleteModal">
+  <div class="modal-card delete-modal-card">
+    <div class="delete-modal-header" id="deleteModalHeader">
+      <h3 id="deleteModalTitle">Delete Conversation</h3>
+      <button class="btn-icon" id="btnCloseDeleteModal" title="Close"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    
+    <div class="delete-modal-body">
+      <!-- Confirmation State -->
+      <div id="deleteConfirmView">
+        <p class="delete-modal-message" id="deleteModalMessage">
+          Are you sure you want to delete this conversation?
+        </p>
+        <div class="delete-modal-actions">
+          <button class="btn btn-secondary" id="btnCancelDelete">Cancel</button>
+          <button class="btn btn-danger" id="btnConfirmDelete">Delete</button>
+        </div>
+      </div>
+
+      <!-- Process State -->
+      <div id="deleteProcessView" style="display: none;">
+        <div class="delete-progress-container">
+          <div class="delete-spinner-wrapper">
+            <div class="delete-spinner"></div>
+          </div>
+          <div class="delete-status-text" id="deleteStatusText">Deleting conversation...</div>
+          <div class="delete-steps-list" id="deleteStepsList">
+            <div class="delete-step-item" id="stepStorage"><i class="fa-regular fa-circle"></i> <span>Removing cloud storage files</span></div>
+            <div class="delete-step-item" id="stepDatabase"><i class="fa-regular fa-circle"></i> <span>Cleaning database records</span></div>
+            <div class="delete-step-item" id="stepCache"><i class="fa-regular fa-circle"></i> <span>Updating local cache</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Completed State -->
+      <div id="deleteCompleteView" style="display: none;">
+        <div class="delete-complete-container">
+          <div class="delete-complete-icon"><i class="fa-solid fa-check"></i></div>
+          <div class="delete-complete-text" id="deleteCompleteText">Deleted successfully.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Settings Modal -->
 <div class="modal-backdrop" id="settingsModal">
 <div class="modal-card">
   <div class="modal-header">
-    <h3><i class="fa-solid fa-sliders"></i> Chatbot Settings</h3>
+    <h3><i class="fa-solid fa-sliders"></i> Settings</h3>
     <button class="btn-icon" id="btnCloseSettings"><i class="fa-solid fa-xmark"></i></button>
   </div>
 
@@ -198,7 +260,7 @@
     <!-- API Keys Configuration -->
     <div class="settings-group">
       <label class="settings-label">
-        Gemini API Keys <span class="label-hint">(1 per line — auto switches if rate limited/down)</span>
+        Gemini API Keys <span class="label-hint">(1 per line — auto-fallback if rate limited)</span>
       </label>
       <textarea
         id="settingApiKeys"
@@ -208,17 +270,26 @@
       ></textarea>
     </div>
 
-    <!-- Model Fallback Priority Order -->
-    <div class="settings-group">
-      <div class="settings-group-header">
-        <label class="settings-label">Model Fallback Priority Order</label>
-        <button class="btn-sm" id="btnRefreshModels"><i class="fa-solid fa-rotate"></i> Reload Models</button>
+    <!-- Model Fallback Priority Order (Collapsible Accordion) -->
+    <div class="settings-group collapsible-group">
+      <div class="settings-group-header clickable" id="btnTogglePrioritySection">
+        <div class="header-title-group">
+          <label class="settings-label">Model Fallback Priority Order</label>
+          <span class="label-hint" id="prioritySummaryHint">Tap to expand and reorder priority</span>
+        </div>
+        <div class="header-actions">
+          <button class="btn-sm" id="btnRefreshModels" title="Reload models from API"><i class="fa-solid fa-rotate"></i> Reload</button>
+          <i class="fa-solid fa-chevron-down toggle-accordion-icon" id="priorityAccordionIcon"></i>
+        </div>
       </div>
-      <p class="settings-desc">Grab and drag with your finger or pointer to reorder priority. Top models are tried first.</p>
-      <div class="priority-list" id="priorityListContainer"></div>
+      
+      <div class="collapsible-content" id="priorityCollapsibleContent" style="display: none;">
+        <p class="settings-desc">Grab and drag or use arrows to reorder models. In Auto mode, top models are tried first.</p>
+        <div class="priority-list" id="priorityListContainer"></div>
+      </div>
     </div>
 
-    <!-- Toggle Controls with Fixed Light/Dark Switch Styling -->
+    <!-- Toggle Controls -->
     <div class="settings-group">
       <div class="setting-toggle-row">
         <div class="toggle-text-col">

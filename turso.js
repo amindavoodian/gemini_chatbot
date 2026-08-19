@@ -3,7 +3,7 @@ Turso Database Client (libSQL over HTTP v2 pipeline)
 Handles Cloud SQLite persistence for conversations and messages.
 */
 const TursoDB = {
-  dbUrl: "https://geminichatbot-dramindavoudian.aws-ap-northeast-1.turso.io/v2/pipeline",
+  dbUrl: "https://geminichatbot-dramindavoudian.turso.io/v2/pipeline",
   authToken: "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODcxMjcyNzksImlkIjoiMDFhMDE5MTUtODcwMS03ZTNlLThkMGItNzNiOGIyZmI5MWZmIiwia2lkIjoiZXNsNzRzeFBkRkVydjc2ckRBRDFBdU1ZcVlwcGlJcFFfUlh3aU1EM0JDbyIsInJpZCI6IjcwMThlZDNhLWE3MGQtNDBhYS1hMWMxLTBkYzhjMWYzNjYyOCJ9.v_BtiDiQBrN_Y27WBE-nGJ7RNVHruDYSCEzAZc-gGMRNJFD0-vS-mDcT6upMid7ehlBa7BJHcAUNnoydtcvtCA",
 
   /**
@@ -26,7 +26,7 @@ const TursoDB = {
   Execute parameterized SQL query over Turso HTTP pipeline
   */
   async execute(sql, args = []) {
-    const formattedArgs = args.map(this.formatArg);
+    const formattedArgs = args.map(arg => this.formatArg(arg));
     const payload = {
       requests: [
         {
@@ -86,7 +86,6 @@ const TursoDB = {
       await this.execute("CREATE TABLE IF NOT EXISTS conversations ( id TEXT PRIMARY KEY, title TEXT, created_at INTEGER, updated_at INTEGER );");
       await this.execute("CREATE TABLE IF NOT EXISTS messages ( id TEXT PRIMARY KEY, conversation_id TEXT, role TEXT, content TEXT, model_used TEXT, files TEXT, created_at INTEGER, translation TEXT, FOREIGN KEY (conversation_id) REFERENCES conversations (id) ON DELETE CASCADE );");
       
-      // Ensure migration if existing schema didn't have translation column
       try {
         await this.execute("ALTER TABLE messages ADD COLUMN translation TEXT;");
       } catch (colErr) {
@@ -107,6 +106,13 @@ const TursoDB = {
     return await this.execute(
       "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at;",
       [id, title, createdAt, updatedAt]
+    );
+  },
+
+  async updateConversationTitle(id, title) {
+    return await this.execute(
+      "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?;",
+      [title, Date.now(), id]
     );
   },
 

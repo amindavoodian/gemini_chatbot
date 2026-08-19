@@ -1,34 +1,29 @@
-/**
+﻿/**
 Gemini API Engine
 Features:
-- Live Google /v1beta/models Endpoint Parser (exact models for your API key)
-- Filtered Chat Models Only (Excludes non-chat / Nano Banana image / TTS / embeddings)
-- Multi-API Key Fallback Cycling
-- Model Priority Fallback on Quota / 429 Errors
+- Dynamic model fetching & priority ordering
+- Multi-API key fallback cycling
+- Mandatory model lock & Auto fallback modes
+- Audio, Image, Video, File base64 encoding
 - Real-time SSE Word-by-Word Streaming
-- Base64 Encoding for Multimodal Attachments
-- Isolated Persian Translation Runner
+- Context Caching integration
+- Isolated, high-fidelity Persian Translation Runner
 */
 const GeminiAPI = {
   baseUrl: "https://generativelanguage.googleapis.com/v1beta",
   
-  // Real, verified default models (active on Google AI Studio)
   defaultModels: [
     "gemini-2.5-flash",
     "gemini-2.5-pro",
-    "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-pro",
     "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-pro",
-    "gemini-3.1-flash-lite"
+    "gemini-1.5-pro"
   ],
+
+  cleanModelName(name) {
+    if (!name) return "gemini-2.5-flash";
+    return String(name).replace(/^models\//, "").trim();
+  },
 
   getApiKeys() {
     const raw = localStorage.getItem("gemini_api_keys") || "";
@@ -44,19 +39,7 @@ const GeminiAPI = {
       try {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const cleaned = parsed.filter(m => {
-            const lower = String(m).toLowerCase();
-            return (
-              !lower.includes("banana") &&
-              !lower.includes("image") &&
-              !lower.includes("embedding") &&
-              !lower.includes("tts") &&
-              !lower.includes("aqa") &&
-              !lower.includes("live") &&
-              !lower.includes("veo")
-            );
-          });
-          return Array.from(new Set([...cleaned, ...this.defaultModels]));
+          return parsed.map(this.cleanModelName);
         }
       } catch (e) {}
     }
@@ -64,75 +47,32 @@ const GeminiAPI = {
   },
 
   saveModelPriority(list) {
-    localStorage.setItem("gemini_model_priority", JSON.stringify(list));
+    const cleaned = list.map(this.cleanModelName);
+    localStorage.setItem("gemini_model_priority", JSON.stringify(cleaned));
   },
 
   /**
-  Fetch live models directly from Google's /v1beta/models endpoint for your key
+  Fetch available models from Gemini endpoint using first working API key
   */
   async fetchAvailableModels() {
     const keys = this.getApiKeys();
-    if (keys.length === 0) {
-      console.log("[GeminiAPI] No API keys set yet. Using default verified model list.");
-      return this.defaultModels;
-    }
+    if (keys.length === 0) return this.defaultModels;
 
-    for (let kIdx = 0; kIdx < keys.length; kIdx++) {
-      const key = keys[kIdx];
+    for (const key of keys) {
       try {
-        console.log(`[GeminiAPI] Querying live Google endpoint: https://generativelanguage.googleapis.com/v1beta/models?key=Key#${kIdx + 1}`);
         const res = await fetch(`${this.baseUrl}/models?key=${key}`);
-        if (!res.ok) {
-          console.warn(`[GeminiAPI] Google models endpoint returned HTTP ${res.status} on Key #${kIdx + 1}`);
-          continue;
-        }
-
+        if (!res.ok) continue;
         const data = await res.json();
-        if (data && Array.isArray(data.models) && data.models.length > 0) {
-          // Extract real live model names provisioned for this key
-          const liveChatModels = data.models
-            .filter(m => {
-              const methods = m.supportedGenerationMethods || [];
-              const rawName = (m.name || "").replace("models/", "").toLowerCase();
-              const displayName = (m.displayName || "").toLowerCase();
-
-              // Must support generateContent for conversational use
-              if (!methods.includes("generateContent")) return false;
-
-              // Filter out embeddings, Banana/Imagen image generators, TTS, and Live WebSockets
-              const isExcluded = 
-                rawName.includes("embedding") ||
-                rawName.includes("aqa") ||
-                rawName.includes("imagen") ||
-                rawName.includes("image") ||
-                rawName.includes("banana") ||
-                rawName.includes("veo") ||
-                rawName.includes("video") ||
-                rawName.includes("tts") ||
-                rawName.includes("live") ||
-                rawName.includes("audio") ||
-                rawName.includes("text-bison") ||
-                rawName.includes("chat-bison") ||
-                displayName.includes("embedding") ||
-                displayName.includes("banana") ||
-                displayName.includes("image generation") ||
-                displayName.includes("tts");
-
-              return !isExcluded;
-            })
-            .map(m => m.name.replace("models/", ""));
-
-          if (liveChatModels.length > 0) {
-            console.log(`[GeminiAPI] Real live models provisioned for your key:`, liveChatModels);
-            return liveChatModels;
-          }
+        if (data.models && Array.isArray(data.models)) {
+          const valid = data.models
+            .filter(m => m.supportedGenerationMethods?.includes("generateContent"))
+            .map(m => this.cleanModelName(m.name));
+          if (valid.length > 0) return valid;
         }
       } catch (e) {
-        console.warn(`[GeminiAPI] Live model fetch error on Key #${kIdx + 1}:`, e);
+        console.warn("Error fetching models with key:", e);
       }
     }
-
-    console.log("[GeminiAPI] Fallback to default verified model list.");
     return this.defaultModels;
   },
 
@@ -186,10 +126,11 @@ const GeminiAPI = {
   },
 
   /**
-  Execute Regular Chat Generation with Multi-Key & Multi-Model Fallbacks
+  Execute Chat Generation with Mandatory Lock OR Auto Fallback
   */
   async generate({
     selectedModel,
+    lockedModel = null,
     historyMessages = [],
     newPrompt = "",
     attachedFiles = [],
@@ -203,10 +144,19 @@ const GeminiAPI = {
     }
 
     const priorityList = this.getModelPriority();
-    const modelsToTry = [
-      selectedModel,
-      ...priorityList.filter(m => m !== selectedModel)
-    ];
+    let modelsToTry = [];
+
+    if (lockedModel) {
+      // Mandatory locked mode: Strictly try only the selected model
+      modelsToTry = [this.cleanModelName(lockedModel)];
+    } else {
+      // Auto fallback mode: Start with selected or #1 priority model, then cascade down
+      const startModel = selectedModel && selectedModel !== "auto" ? this.cleanModelName(selectedModel) : priorityList[0];
+      modelsToTry = [
+        startModel,
+        ...priorityList.filter(m => m !== startModel)
+      ];
+    }
 
     // Format files into inlineData parts
     const fileParts = [];
@@ -223,17 +173,17 @@ const GeminiAPI = {
     // Build Gemini contents array exclusively from clean conversational messages
     const contents = [];
     for (const msg of historyMessages) {
-      if (msg.content && msg.content.trim()) {
+      if (msg.content && String(msg.content).trim()) {
         contents.push({
           role: msg.role === "user" ? "user" : "model",
-          parts: [{ text: msg.content }]
+          parts: [{ text: String(msg.content) }]
         });
       }
     }
 
     // Append latest prompt + attachments
     const currentParts = [];
-    if (newPrompt.trim()) currentParts.push({ text: newPrompt });
+    if (newPrompt && newPrompt.trim()) currentParts.push({ text: newPrompt });
     fileParts.forEach(fp => currentParts.push(fp));
 
     contents.push({
@@ -252,7 +202,7 @@ const GeminiAPI = {
         const currentKey = keys[kIdx];
 
         if (mIdx > 0 || kIdx > 0) {
-          onFallbackNotice(`Switching to Model: ${currentModel} (Key #${kIdx + 1})...`);
+          onFallbackNotice(`Using Model: ${currentModel} (Key #${kIdx + 1})...`);
         }
 
         try {
@@ -269,7 +219,6 @@ const GeminiAPI = {
           }
 
           if (isStreaming) {
-            console.log(`[GeminiAPI] Streaming requested with model: ${currentModel} on Key #${kIdx + 1}`);
             const endpoint = `${this.baseUrl}/models/${currentModel}:streamGenerateContent?alt=sse&key=${currentKey}`;
             const res = await fetch(endpoint, {
               method: "POST",
@@ -308,7 +257,7 @@ const GeminiAPI = {
                     }
                   }
                 } catch (e) {
-                  console.warn("[GeminiAPI] SSE JSON parse warning:", e, jsonStr);
+                  // Ignore partial SSE split lines
                 }
               }
             };
@@ -338,14 +287,12 @@ const GeminiAPI = {
               throw new Error("Empty response received during stream.");
             }
 
-            console.log(`[GeminiAPI] Streaming completed successfully (${fullAccumulatedText.length} characters).`);
             return {
               text: fullAccumulatedText,
               modelUsed: currentModel
             };
 
           } else {
-            console.log(`[GeminiAPI] Unary generation requested with model: ${currentModel}`);
             const endpoint = `${this.baseUrl}/models/${currentModel}:generateContent?key=${currentKey}`;
             const res = await fetch(endpoint, {
               method: "POST",
@@ -388,11 +335,11 @@ const GeminiAPI = {
       }
     }
 
-    throw new Error(`All models and API keys failed. Last error: ${lastError?.message || "Unknown error"}`);
+    throw new Error(`Generation failed on selected model(s). Last error: ${lastError?.message || "Unknown error"}`);
   },
 
   /**
-  Translate Text to Fluent Persian (Farsi) Outside the Chat History Flow
+  Translate Text to Fluent Persian (Farsi) with perfect formatting preservation
   */
   async translateToFarsi(textToTranslate, activeModel = "gemini-2.5-flash") {
     const keys = this.getApiKeys();
@@ -411,9 +358,10 @@ Text to translate:
 ${textToTranslate}`;
 
     const priorityList = this.getModelPriority();
+    const cleanActive = (activeModel && activeModel !== "auto") ? this.cleanModelName(activeModel) : priorityList[0];
     const modelsToTry = [
-      activeModel,
-      ...priorityList.filter(m => m !== activeModel)
+      cleanActive,
+      ...priorityList.filter(m => m !== cleanActive)
     ];
 
     for (const model of modelsToTry) {
@@ -432,7 +380,7 @@ ${textToTranslate}`;
           if (!res.ok) continue;
           const data = await res.json();
           const translatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (translatedText) return translatedText.trim();
+          if (translatedText && translatedText.trim()) return translatedText.trim();
         } catch (e) {
           console.warn(`Translation attempt failed on ${model}:`, e);
         }

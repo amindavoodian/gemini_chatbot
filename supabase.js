@@ -1,11 +1,12 @@
 ﻿/**
 Supabase Storage Integration
 Handles uploading and deleting chat attachments (Images, Audio, Video, PDFs).
+Supports File objects, Blobs, and queued Data URLs from background sync.
 */
 const SupabaseStorage = {
   url: "https://dtympkugrwxskqbjxjoj.supabase.co",
   key: "sb_publishable_SF9wuG1fHbE0dlh0gdFBUg_0qWUsuLA",
-  bucketName: "chat-attachments",
+  bucketName: "g_chatbot",
   client: null,
 
   init() {
@@ -22,40 +23,78 @@ const SupabaseStorage = {
   */
   fileToDataUrl(file) {
     return new Promise((resolve) => {
+      if (!file) return resolve("");
+      if (typeof file === "string") return resolve(file);
+      if (file.dataUrl) return resolve(file.dataUrl);
+
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
-      reader.onerror = () => resolve(URL.createObjectURL(file));
+      reader.onerror = () => {
+        try {
+          resolve(URL.createObjectURL(file));
+        } catch (e) {
+          resolve("");
+        }
+      };
       reader.readAsDataURL(file);
     });
   },
 
   /**
+  Helper: Convert Data URL back to Blob for Supabase upload
+  */
+  async dataUrlToBlob(dataUrl) {
+    try {
+      const res = await fetch(dataUrl);
+      return await res.blob();
+    } catch (e) {
+      return null;
+    }
+  },
+
+  /**
   Upload file to Supabase bucket under conversation directory
+  Supports File objects or serialized { name, type, size, dataUrl } from offline queue.
   */
   async uploadFile(conversationId, file) {
     if (!this.client) this.init();
 
-    // Clean filename
-    const cleanName = (file.name || "attachment").replace(/[^a-zA-Z0-9._-]/g, "_");
+    const fileName = file.name || "attachment";
+    const fileType = file.type || "application/octet-stream";
+    const fileSize = file.size || 0;
+    const cleanName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
     const filePath = `${conversationId}/${Date.now()}_${cleanName}`;
+
+    let uploadPayload = file;
+    let fallbackDataUrl = file.dataUrl || "";
+
+    // If file is from offline queue or serialized dataUrl
+    if (file.dataUrl && !(file instanceof File || file instanceof Blob)) {
+      const blob = await this.dataUrlToBlob(file.dataUrl);
+      if (blob) {
+        uploadPayload = blob;
+      }
+    } else if (!fallbackDataUrl && (file instanceof File || file instanceof Blob)) {
+      fallbackDataUrl = await this.fileToDataUrl(file);
+    }
 
     try {
       const { data, error } = await this.client.storage
         .from(this.bucketName)
-        .upload(filePath, file, {
+        .upload(filePath, uploadPayload, {
+          contentType: fileType,
           cacheControl: "3600",
           upsert: false
         });
 
       if (error) {
         console.warn("Supabase upload warning:", error.message);
-        const dataUrl = await this.fileToDataUrl(file);
         return {
           path: filePath,
-          url: dataUrl,
-          name: file.name,
-          type: file.type,
-          size: file.size
+          url: fallbackDataUrl,
+          name: fileName,
+          type: fileType,
+          size: fileSize
         };
       }
 
@@ -66,19 +105,18 @@ const SupabaseStorage = {
       return {
         path: filePath,
         url: publicUrlData.publicUrl,
-        name: file.name,
-        type: file.type,
-        size: file.size
+        name: fileName,
+        type: fileType,
+        size: fileSize
       };
     } catch (err) {
       console.warn("Upload exception, falling back to permanent data URL:", err);
-      const dataUrl = await this.fileToDataUrl(file);
       return {
         path: filePath,
-        url: dataUrl,
-        name: file.name,
-        type: file.type,
-        size: file.size
+        url: fallbackDataUrl,
+        name: fileName,
+        type: fileType,
+        size: fileSize
       };
     }
   },

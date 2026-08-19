@@ -1,6 +1,7 @@
-/**
-Main Application Controller
-Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & Font Scaling
+﻿/**
+Main Application Controller (SPA Mode)
+Optimized for client-side single page navigation, instant AI response prioritization,
+voice recording, background synchronization, and minimal UI feedback windows.
 */
 (function() {
   // DOM Elements
@@ -15,6 +16,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
   const historyEmpty = document.getElementById("historyEmpty");
   const btnClearAllHistory = document.getElementById("btnClearAllHistory");
   const modelSelect = document.getElementById("modelSelect");
+  const modelSelectWrapper = document.getElementById("modelSelectWrapper");
   const statusBadge = document.getElementById("statusBadge");
   const chatContainer = document.getElementById("chatContainer");
   const welcomeScreen = document.getElementById("welcomeScreen");
@@ -22,9 +24,12 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
   const chatTextarea = document.getElementById("chatTextarea");
   const btnSend = document.getElementById("btnSend");
   const btnAttach = document.getElementById("btnAttach");
+  const btnMic = document.getElementById("btnMic");
   const fileInput = document.getElementById("fileInput");
   const attachmentPreviews = document.getElementById("attachmentPreviews");
   const notificationBanner = document.getElementById("notificationBanner");
+  const notificationBannerContent = document.getElementById("notificationBannerContent");
+  const btnCloseNotification = document.getElementById("btnCloseNotification");
 
   // Font Size Scaler Controls
   const btnFontDecrease = document.getElementById("btnFontDecrease");
@@ -52,6 +57,31 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
   const settingCaching = document.getElementById("settingCaching");
   const priorityListContainer = document.getElementById("priorityListContainer");
   const btnRefreshModels = document.getElementById("btnRefreshModels");
+  const btnTogglePrioritySection = document.getElementById("btnTogglePrioritySection");
+  const priorityCollapsibleContent = document.getElementById("priorityCollapsibleContent");
+  const priorityAccordionIcon = document.getElementById("priorityAccordionIcon");
+
+  // Minimal Deletion Process Modal Elements
+  const deleteModal = document.getElementById("deleteModal");
+  const deleteModalTitle = document.getElementById("deleteModalTitle");
+  const deleteModalMessage = document.getElementById("deleteModalMessage");
+  const deleteConfirmView = document.getElementById("deleteConfirmView");
+  const deleteProcessView = document.getElementById("deleteProcessView");
+  const deleteCompleteView = document.getElementById("deleteCompleteView");
+  const deleteStatusText = document.getElementById("deleteStatusText");
+  const deleteCompleteText = document.getElementById("deleteCompleteText");
+  const btnCloseDeleteModal = document.getElementById("btnCloseDeleteModal");
+  const btnCancelDelete = document.getElementById("btnCancelDelete");
+  const btnConfirmDelete = document.getElementById("btnConfirmDelete");
+  const stepStorage = document.getElementById("stepStorage");
+  const stepDatabase = document.getElementById("stepDatabase");
+  const stepCache = document.getElementById("stepCache");
+
+  // LocalStorage Cache & Sync Constants
+  const CACHE_KEY_RECENT_CONVS = "gemini_cached_recent_convs_v1";
+  const CACHE_KEY_MSG_PREFIX = "gemini_cached_msgs_v1_";
+  const CACHE_KEY_SYNC_QUEUE = "gemini_pending_sync_queue_v2";
+  const MAX_CACHED_CONVS = 5;
 
   // State
   let currentConversationId = null;
@@ -59,6 +89,9 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
   let attachedFiles = [];
   let isGenerating = false;
   let availableModels = [];
+  let lockedModel = localStorage.getItem("gemini_locked_model") || null;
+  let notificationTimer = null;
+  let pendingDeleteAction = null;
 
   // Setup Markdown parser with Highlight.js
   if (window.marked) {
@@ -78,6 +111,172 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     });
   }
 
+  // =========================================================================
+  // SPA ROUTER (Single Page Application Hash Router)
+  // =========================================================================
+  function navigateTo(route, pushState = true) {
+    if (pushState) {
+      if (window.location.hash !== route) {
+        window.location.hash = route;
+      }
+    }
+  }
+
+  function handleRoute() {
+    const hash = window.location.hash || "#/";
+
+    if (hash === "#/settings") {
+      openSettingsModal(false);
+      return;
+    } else {
+      closeSettingsModal(false);
+    }
+
+    if (hash.startsWith("#/chat/")) {
+      const convId = hash.replace("#/chat/", "").trim();
+      if (convId && convId !== currentConversationId) {
+        openConversation(convId, false);
+      }
+    } else if (hash === "#/new" || hash === "#/" || hash === "") {
+      if (currentConversationId !== null) {
+        startNewConversation(false);
+      }
+    }
+  }
+
+  window.addEventListener("hashchange", handleRoute);
+
+  // =========================================================================
+  // BACKGROUND SYNC ENGINE (Persistent Offline Queue for Turso & Supabase)
+  // =========================================================================
+  const SyncQueue = {
+    isProcessing: false,
+
+    getTasks() {
+      try {
+        const raw = localStorage.getItem(CACHE_KEY_SYNC_QUEUE);
+        return raw ? JSON.parse(raw) : [];
+      } catch (e) {
+        return [];
+      }
+    },
+
+    saveTasks(tasks) {
+      try {
+        localStorage.setItem(CACHE_KEY_SYNC_QUEUE, JSON.stringify(tasks));
+      } catch (e) {
+        console.warn("Sync queue storage notice:", e);
+      }
+    },
+
+    enqueue(task) {
+      const tasks = this.getTasks();
+      tasks.push({
+        id: "task_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+        createdAt: Date.now(),
+        ...task
+      });
+      this.saveTasks(tasks);
+
+      if (!isGenerating) {
+        setTimeout(() => this.process(), 50);
+      }
+    },
+
+    removeTask(taskId) {
+      const tasks = this.getTasks().filter(t => t.id !== taskId);
+      this.saveTasks(tasks);
+    },
+
+    clearTasksForConversation(convId) {
+      const tasks = this.getTasks().filter(t => t.conversationId !== convId);
+      this.saveTasks(tasks);
+    },
+
+    clearAll() {
+      localStorage.removeItem(CACHE_KEY_SYNC_QUEUE);
+    },
+
+    async process() {
+      if (this.isProcessing || isGenerating) return;
+      const tasks = this.getTasks();
+      if (tasks.length === 0) return;
+
+      this.isProcessing = true;
+
+      try {
+        for (const task of tasks) {
+          if (isGenerating) break;
+
+          try {
+            switch (task.type) {
+              case "SAVE_CONV":
+                await TursoDB.saveConversation(task.conversationId, task.title, task.createdAt, task.updatedAt);
+                break;
+
+              case "UPDATE_CONV_TIME":
+                await TursoDB.updateConversationTime(task.conversationId, task.updatedAt);
+                break;
+
+              case "SAVE_USER_MSG": {
+                let finalFiles = task.files || [];
+                if (finalFiles.length > 0 && finalFiles.some(f => f.dataUrl && !f.uploaded)) {
+                  const uploadedList = [];
+                  for (const f of finalFiles) {
+                    if (f.uploaded && f.url) {
+                      uploadedList.push(f);
+                    } else {
+                      const uploaded = await SupabaseStorage.uploadFile(task.conversationId, f);
+                      uploadedList.push({ ...uploaded, uploaded: true });
+                    }
+                  }
+                  finalFiles = uploadedList;
+                }
+
+                const filesJson = JSON.stringify(finalFiles);
+                await TursoDB.saveMessage(
+                  task.messageId,
+                  task.conversationId,
+                  "user",
+                  task.content || "",
+                  "",
+                  filesJson,
+                  task.createdAt,
+                  ""
+                );
+                break;
+              }
+
+              case "SAVE_MODEL_MSG":
+                await TursoDB.saveMessage(
+                  task.messageId,
+                  task.conversationId,
+                  "model",
+                  task.content || "",
+                  task.modelUsed || "",
+                  task.filesJson || "[]",
+                  task.createdAt,
+                  task.translation || ""
+                );
+                break;
+
+              case "UPDATE_TRANSLATION":
+                await TursoDB.updateMessageTranslation(task.messageId, task.translation);
+                break;
+            }
+
+            this.removeTask(task.id);
+          } catch (taskErr) {
+            console.warn("Background sync task deferred:", task.type, taskErr);
+            break;
+          }
+        }
+      } finally {
+        this.isProcessing = false;
+      }
+    }
+  };
+
   // --- INITIALIZATION ---
   async function initApp() {
     // 1. Initialize Theme
@@ -92,19 +291,23 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     const savedFontSize = parseInt(localStorage.getItem("chat_font_size") || "15", 10);
     applyFontSize(savedFontSize);
 
-    // 4. Initialize Turso DB & Supabase
+    // 4. Instant Load from Local Cache (0ms)
+    renderCachedConversations();
+
+    // 5. Initialize Turso DB, Supabase & Process Background Sync Queue
     try {
       await TursoDB.initDB();
       SupabaseStorage.init();
       await loadConversationsList();
+      SyncQueue.process();
     } catch (e) {
-      console.warn("Storage init notice:", e);
+      console.warn("Storage background init notice:", e);
     }
 
-    // 5. Load & Populate Live Models from Google
+    // 6. Load & Populate Models
     await refreshModelsList();
 
-    // 6. Setup Suggestion Cards
+    // 7. Setup Suggestion Cards
     document.querySelectorAll(".suggestion-card").forEach(card => {
       card.addEventListener("click", () => {
         chatTextarea.value = card.getAttribute("data-prompt");
@@ -113,13 +316,58 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
       });
     });
 
-    // 7. Open Settings if no API key exists
+    // 8. Setup Notification Close
+    btnCloseNotification?.addEventListener("click", hideNotification);
+
+    // 9. Initial SPA Route Handling
+    handleRoute();
+
+    // 10. Open Settings if no API key exists
     if (GeminiAPI.getApiKeys().length === 0) {
       openSettingsModal();
     }
   }
 
-  // --- FONT SIZE CONTROLLER (+ and -) ---
+  // --- LOCALSTORAGE 5-CONVERSATION CACHING SYSTEM ---
+  function getCachedConversations() {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY_RECENT_CONVS);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveCachedConversations(convs) {
+    try {
+      const top5 = (convs || []).slice(0, MAX_CACHED_CONVS);
+      localStorage.setItem(CACHE_KEY_RECENT_CONVS, JSON.stringify(top5));
+    } catch (e) {}
+  }
+
+  function getCachedMessages(convId) {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY_MSG_PREFIX + convId);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveCachedMessages(convId, msgs) {
+    try {
+      localStorage.setItem(CACHE_KEY_MSG_PREFIX + convId, JSON.stringify(msgs));
+    } catch (e) {}
+  }
+
+  function renderCachedConversations() {
+    const cached = getCachedConversations();
+    if (cached.length > 0) {
+      renderConversationsDOM(cached);
+    }
+  }
+
+  // --- FONT SIZE CONTROLLER ---
   function applyFontSize(size) {
     const clampedSize = Math.max(12, Math.min(22, size));
     document.documentElement.style.setProperty("--chat-font-size", clampedSize + "px");
@@ -181,39 +429,75 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     applyDirection(next);
   }
 
-  // --- MODEL MANAGEMENT & PRIORITY (ONLINE LIVE SYNC) ---
-  async function refreshModelsList(isManualReload = false) {
-    modelSelect.innerHTML = "<option disabled selected>Syncing models from Google...</option>";
+  // --- MODEL MANAGEMENT, SYNCHRONIZATION & MANDATORY LOCK ---
+  async function refreshModelsList() {
     availableModels = await GeminiAPI.fetchAvailableModels();
 
-    const storedPriority = GeminiAPI.getModelPriority();
-    
-    // Filter stored priority to keep user ordering for valid models
-    const validStoredPriority = storedPriority.filter(m => availableModels.includes(m));
-    const finalPriority = isManualReload
-      ? availableModels
-      : Array.from(new Set([...validStoredPriority, ...availableModels]));
+    const existingPriority = GeminiAPI.getModelPriority();
+    const mergedPriority = [...new Set([...existingPriority, ...availableModels])];
+    GeminiAPI.saveModelPriority(mergedPriority);
 
-    GeminiAPI.saveModelPriority(finalPriority);
-
-    const prevSelected = modelSelect.value;
-    modelSelect.innerHTML = "";
-    finalPriority.forEach(model => {
-      const opt = document.createElement("option");
-      opt.value = model;
-      opt.textContent = model;
-      modelSelect.appendChild(opt);
-    });
-
-    if (prevSelected && finalPriority.includes(prevSelected)) {
-      modelSelect.value = prevSelected;
-    } else if (finalPriority.length > 0) {
-      modelSelect.value = finalPriority[0];
-    }
+    rebuildModelDropdown(mergedPriority);
     renderPrioritySettingsList();
   }
 
-  // --- DRAG & TOUCH REORDER PRIORITY LIST ---
+  function rebuildModelDropdown(priorityList) {
+    modelSelect.innerHTML = "";
+
+    const autoOpt = document.createElement("option");
+    autoOpt.value = "auto";
+    autoOpt.textContent = `Auto Fallback (Priority #1: ${priorityList[0] || "Default"})`;
+    modelSelect.appendChild(autoOpt);
+
+    priorityList.forEach((model, idx) => {
+      const opt = document.createElement("option");
+      opt.value = model;
+      opt.textContent = `#${idx + 1} ${model} (Lock)`;
+      modelSelect.appendChild(opt);
+    });
+
+    if (lockedModel && priorityList.includes(lockedModel)) {
+      modelSelect.value = lockedModel;
+      modelSelectWrapper.classList.add("is-locked");
+    } else {
+      lockedModel = null;
+      localStorage.removeItem("gemini_locked_model");
+      modelSelect.value = "auto";
+      modelSelectWrapper.classList.remove("is-locked");
+    }
+  }
+
+  modelSelect.addEventListener("change", () => {
+    const val = modelSelect.value;
+    if (val === "auto") {
+      lockedModel = null;
+      localStorage.removeItem("gemini_locked_model");
+      modelSelectWrapper.classList.remove("is-locked");
+      showNotification("Switched to Auto Fallback mode.", "warning", 3000);
+    } else {
+      lockedModel = val;
+      localStorage.setItem("gemini_locked_model", val);
+      modelSelectWrapper.classList.add("is-locked");
+      showNotification(`Locked model to: ${val}. Auto-fallback disabled.`, "warning", 3500);
+    }
+  });
+
+  modelSelectWrapper.querySelector(".model-lock-badge")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    lockedModel = null;
+    localStorage.removeItem("gemini_locked_model");
+    modelSelect.value = "auto";
+    modelSelectWrapper.classList.remove("is-locked");
+    showNotification("Unlocked model. Switched to Auto Fallback.", "warning", 3000);
+  });
+
+  btnTogglePrioritySection?.addEventListener("click", (e) => {
+    if (e.target.closest("#btnRefreshModels")) return;
+    const isHidden = priorityCollapsibleContent.style.display === "none";
+    priorityCollapsibleContent.style.display = isHidden ? "flex" : "none";
+    priorityAccordionIcon.classList.toggle("open", isHidden);
+  });
+
   function renderPrioritySettingsList() {
     const list = GeminiAPI.getModelPriority();
     priorityListContainer.innerHTML = "";
@@ -236,7 +520,6 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
       priorityListContainer.appendChild(row);
     });
 
-    // Up / Down Buttons
     priorityListContainer.querySelectorAll(".btn-up").forEach(btn => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -247,6 +530,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
           curList[idx - 1] = curList[idx];
           curList[idx] = temp;
           GeminiAPI.saveModelPriority(curList);
+          rebuildModelDropdown(curList);
           renderPrioritySettingsList();
         }
       });
@@ -262,12 +546,25 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
           curList[idx + 1] = curList[idx];
           curList[idx] = temp;
           GeminiAPI.saveModelPriority(curList);
+          rebuildModelDropdown(curList);
           renderPrioritySettingsList();
         }
       });
     });
 
-    // Pointer & Touch Reorder
+    function checkAndAutoScroll(clientY) {
+      const rect = priorityListContainer.getBoundingClientRect();
+      const topThreshold = rect.top + 35;
+      const bottomThreshold = rect.bottom - 35;
+      const speed = 8;
+
+      if (clientY < topThreshold && priorityListContainer.scrollTop > 0) {
+        priorityListContainer.scrollTop -= speed;
+      } else if (clientY > bottomThreshold && priorityListContainer.scrollTop < (priorityListContainer.scrollHeight - priorityListContainer.clientHeight)) {
+        priorityListContainer.scrollTop += speed;
+      }
+    }
+
     let dragSrcIdx = null;
     const items = priorityListContainer.querySelectorAll(".priority-item");
 
@@ -279,9 +576,14 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
         e.dataTransfer.setData("text/plain", dragSrcIdx);
       });
 
+      item.addEventListener("drag", (e) => {
+        if (e.clientY > 0) checkAndAutoScroll(e.clientY);
+      });
+
       item.addEventListener("dragover", (e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
+        checkAndAutoScroll(e.clientY);
         const targetIdx = parseInt(item.getAttribute("data-idx"));
         if (dragSrcIdx !== null && targetIdx !== dragSrcIdx) {
           item.classList.add("drag-over");
@@ -299,6 +601,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
           const moved = curList.splice(dragSrcIdx, 1)[0];
           curList.splice(targetIdx, 0, moved);
           GeminiAPI.saveModelPriority(curList);
+          rebuildModelDropdown(curList);
           renderPrioritySettingsList();
         }
       });
@@ -308,7 +611,6 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
         dragSrcIdx = null;
       });
 
-      // Mobile Touch Drag Support
       const grabHandle = item.querySelector(".priority-grab-handle");
       let currentTouchTarget = null;
 
@@ -320,6 +622,8 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
       grabHandle.addEventListener("touchmove", (e) => {
         e.preventDefault();
         const touch = e.touches[0];
+        checkAndAutoScroll(touch.clientY);
+
         const elemUnderTouch = document.elementFromPoint(touch.clientX, touch.clientY);
         const targetItem = elemUnderTouch ? elemUnderTouch.closest(".priority-item") : null;
 
@@ -340,6 +644,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
             const moved = curList.splice(dragSrcIdx, 1)[0];
             curList.splice(targetIdx, 0, moved);
             GeminiAPI.saveModelPriority(curList);
+            rebuildModelDropdown(curList);
             renderPrioritySettingsList();
           }
         }
@@ -353,47 +658,87 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
   async function loadConversationsList() {
     try {
       const convs = await TursoDB.getConversations();
-      historyList.innerHTML = "";
-      if (!convs || convs.length === 0) {
-        historyEmpty.style.display = "block";
-        historyList.appendChild(historyEmpty);
-        return;
-      }
-      historyEmpty.style.display = "none";
-
-      convs.forEach(c => {
-        const item = document.createElement("div");
-        item.className = `history-item ${c.id === currentConversationId ? "active" : ""}`;
-        item.setAttribute("data-id", c.id);
-        item.innerHTML = `
-          <span class="history-title">${escapeHtml(c.title || "Untitled Conversation")}</span>
-          <div class="history-actions">
-            <button class="history-btn-del" title="Delete chat"><i class="fa-solid fa-trash"></i></button>
-          </div>
-        `;
-
-        item.addEventListener("click", (e) => {
-          if (e.target.closest(".history-btn-del")) return;
-          openConversation(c.id);
-          closeSidebarMobile();
-        });
-
-        item.querySelector(".history-btn-del").addEventListener("click", async (e) => {
-          e.stopPropagation();
-          if (confirm("Delete this conversation and its uploaded files?")) {
-            await deleteSingleConversation(c.id);
-          }
-        });
-
-        historyList.appendChild(item);
-      });
+      saveCachedConversations(convs || []);
+      renderConversationsDOM(convs || []);
     } catch (e) {
       console.warn("Failed loading conversations from Turso:", e);
     }
   }
 
-  async function openConversation(convId) {
+  function renderConversationsDOM(convs) {
+    historyList.innerHTML = "";
+    if (!convs || convs.length === 0) {
+      historyEmpty.style.display = "block";
+      historyList.appendChild(historyEmpty);
+      return;
+    }
+    historyEmpty.style.display = "none";
+
+    convs.forEach(c => {
+      const item = document.createElement("div");
+      item.className = `history-item ${c.id === currentConversationId ? "active" : ""}`;
+      item.setAttribute("data-id", c.id);
+      item.innerHTML = `
+        <span class="history-title" title="${escapeHtml(c.title || "Untitled")}">${escapeHtml(c.title || "Untitled Conversation")}</span>
+        <div class="history-actions">
+          <button class="history-btn-action history-btn-rename" title="Rename conversation"><i class="fa-solid fa-pen"></i></button>
+          <button class="history-btn-action history-btn-del" title="Delete chat"><i class="fa-solid fa-trash"></i></button>
+        </div>
+      `;
+
+      item.addEventListener("click", (e) => {
+        if (e.target.closest(".history-actions")) return;
+        navigateTo("#/chat/" + c.id);
+        closeSidebarMobile();
+      });
+
+      // Rename Conversation
+      item.querySelector(".history-btn-rename").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const currentTitle = c.title || "Untitled Conversation";
+        const newTitle = prompt("Enter new title for this conversation:", currentTitle);
+        if (newTitle && newTitle.trim() && newTitle.trim() !== currentTitle) {
+          await renameConversation(c.id, newTitle.trim());
+        }
+      });
+
+      // Delete Single Conversation
+      item.querySelector(".history-btn-del").addEventListener("click", (e) => {
+        e.stopPropagation();
+        promptDeleteSingle(c.id, c.title || "Untitled Conversation");
+      });
+
+      historyList.appendChild(item);
+    });
+  }
+
+  async function renameConversation(convId, newTitle) {
+    try {
+      await TursoDB.updateConversationTitle(convId, newTitle);
+      
+      const cached = getCachedConversations();
+      const target = cached.find(x => x.id === convId);
+      if (target) {
+        target.title = newTitle;
+        saveCachedConversations(cached);
+      }
+      
+      await loadConversationsList();
+    } catch (e) {
+      alert("Error renaming conversation: " + e.message);
+    }
+  }
+
+  async function openConversation(convId, updateHash = true) {
+    if (isRecordingAudio) {
+      stopAudioRecording();
+    }
+
     currentConversationId = convId;
+    if (updateHash) {
+      navigateTo("#/chat/" + convId);
+    }
+
     welcomeScreen.style.display = "none";
     messagesList.innerHTML = "";
 
@@ -401,31 +746,68 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
       el.classList.toggle("active", el.getAttribute("data-id") === convId);
     });
 
+    // 1. Instantly render from local cache if available (0ms delay)
+    const cachedMsgs = getCachedMessages(convId);
+    if (cachedMsgs && cachedMsgs.length > 0) {
+      currentMessages = cachedMsgs;
+      renderMessagesArray(cachedMsgs);
+    }
+
+    // 2. Fetch fresh from Turso DB asynchronously in background
     try {
       const msgs = await TursoDB.getMessages(convId);
       currentMessages = msgs || [];
-      currentMessages.forEach(msg => {
-        let parsedFiles = [];
-        if (msg.files) {
-          if (typeof msg.files === "string") {
-            try {
-              parsedFiles = JSON.parse(msg.files);
-            } catch (e) {
-              parsedFiles = [];
-            }
-          } else if (Array.isArray(msg.files)) {
-            parsedFiles = msg.files;
-          }
-        }
-        appendMessageUI(msg.role, msg.content, parsedFiles, msg.model_used, false, msg.id, msg.translation || "");
-      });
+      saveCachedMessages(convId, currentMessages);
+
+      if (!cachedMsgs || cachedMsgs.length === 0 || JSON.stringify(cachedMsgs) !== JSON.stringify(currentMessages)) {
+        renderMessagesArray(currentMessages);
+      }
       scrollToBottom();
     } catch (e) {
-      console.error("Failed loading messages:", e);
+      console.error("Failed loading messages from Turso:", e);
+      if (!cachedMsgs || cachedMsgs.length === 0) {
+        messagesList.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px;">No messages found in this chat.</div>`;
+      }
     }
   }
 
-  function startNewConversation() {
+  function renderMessagesArray(msgs) {
+    messagesList.innerHTML = "";
+    if (!msgs || msgs.length === 0) {
+      messagesList.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px;">No messages found in this chat.</div>`;
+      return;
+    }
+
+    msgs.forEach(msg => {
+      let parsedFiles = [];
+      if (msg.files) {
+        if (typeof msg.files === "string") {
+          try {
+            parsedFiles = JSON.parse(msg.files);
+          } catch (e) {
+            parsedFiles = [];
+          }
+        } else if (Array.isArray(msg.files)) {
+          parsedFiles = msg.files;
+        }
+      }
+      appendMessageUI(
+        msg.role || "user",
+        msg.content || "",
+        parsedFiles,
+        msg.model_used || "",
+        false,
+        msg.id || ("msg_" + Math.random()),
+        msg.translation || ""
+      );
+    });
+  }
+
+  function startNewConversation(updateHash = true) {
+    if (isRecordingAudio) {
+      stopAudioRecording();
+    }
+
     currentConversationId = null;
     currentMessages = [];
     messagesList.innerHTML = "";
@@ -435,33 +817,136 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     document.querySelectorAll(".history-item").forEach(el => el.classList.remove("active"));
     closeSidebarMobile();
     chatTextarea.focus();
+
+    if (updateHash) {
+      navigateTo("#/new");
+    }
   }
 
-  async function deleteSingleConversation(convId) {
-    try {
-      await SupabaseStorage.deleteConversationFiles(convId);
-      await TursoDB.deleteConversation(convId);
+  // =========================================================================
+  // MINIMAL DELETION PROCESS WINDOW CONTROLLER
+  // =========================================================================
+  function setStepState(stepElement, state) {
+    if (!stepElement) return;
+    const icon = stepElement.querySelector("i");
+    stepElement.className = "delete-step-item " + state;
 
-      if (currentConversationId === convId) {
-        startNewConversation();
+    if (state === "active") {
+      if (icon) icon.className = "fa-solid fa-spinner fa-spin";
+    } else if (state === "done") {
+      if (icon) icon.className = "fa-solid fa-circle-check";
+    } else {
+      if (icon) icon.className = "fa-regular fa-circle";
+    }
+  }
+
+  function resetDeleteModalViews() {
+    deleteConfirmView.style.display = "block";
+    deleteProcessView.style.display = "none";
+    deleteCompleteView.style.display = "none";
+
+    setStepState(stepStorage, "");
+    setStepState(stepDatabase, "");
+    setStepState(stepCache, "");
+  }
+
+  function promptDeleteSingle(convId, title) {
+    pendingDeleteAction = { type: "single", id: convId };
+    deleteModalTitle.textContent = "Delete Conversation";
+    deleteModalMessage.textContent = `Are you sure you want to delete "${title}"? All messages and attachments will be permanently removed.`;
+    resetDeleteModalViews();
+    deleteModal.classList.add("open");
+  }
+
+  function promptClearAll() {
+    pendingDeleteAction = { type: "all" };
+    deleteModalTitle.textContent = "Clear All History";
+    deleteModalMessage.textContent = "Are you sure you want to permanently clear all conversations and media files? This cannot be undone.";
+    resetDeleteModalViews();
+    deleteModal.classList.add("open");
+  }
+
+  function closeDeleteModal() {
+    deleteModal.classList.remove("open");
+    pendingDeleteAction = null;
+  }
+
+  btnCloseDeleteModal?.addEventListener("click", closeDeleteModal);
+  btnCancelDelete?.addEventListener("click", closeDeleteModal);
+
+  btnConfirmDelete?.addEventListener("click", async () => {
+    if (!pendingDeleteAction) return;
+
+    deleteConfirmView.style.display = "none";
+    deleteProcessView.style.display = "block";
+    deleteStatusText.textContent = pendingDeleteAction.type === "all" ? "Clearing all history..." : "Deleting conversation...";
+
+    try {
+      if (pendingDeleteAction.type === "single") {
+        const convId = pendingDeleteAction.id;
+
+        // Step 1: Storage
+        setStepState(stepStorage, "active");
+        SyncQueue.clearTasksForConversation(convId);
+        await SupabaseStorage.deleteConversationFiles(convId);
+        setStepState(stepStorage, "done");
+
+        // Step 2: Database
+        setStepState(stepDatabase, "active");
+        await TursoDB.deleteConversation(convId);
+        setStepState(stepDatabase, "done");
+
+        // Step 3: Cache & State
+        setStepState(stepCache, "active");
+        localStorage.removeItem(CACHE_KEY_MSG_PREFIX + convId);
+        const cached = getCachedConversations().filter(x => x.id !== convId);
+        saveCachedConversations(cached);
+        setStepState(stepCache, "done");
+
+        if (currentConversationId === convId) {
+          startNewConversation(true);
+        }
+        await loadConversationsList();
+
+        deleteCompleteText.textContent = "Conversation deleted successfully.";
+      } else {
+        // Step 1: Storage
+        setStepState(stepStorage, "active");
+        SyncQueue.clearAll();
+        await SupabaseStorage.clearAllStorage();
+        setStepState(stepStorage, "done");
+
+        // Step 2: Database
+        setStepState(stepDatabase, "active");
+        await TursoDB.clearAllHistory();
+        setStepState(stepDatabase, "done");
+
+        // Step 3: Cache & State
+        setStepState(stepCache, "active");
+        const cached = getCachedConversations();
+        cached.forEach(c => localStorage.removeItem(CACHE_KEY_MSG_PREFIX + c.id));
+        localStorage.removeItem(CACHE_KEY_RECENT_CONVS);
+        setStepState(stepCache, "done");
+
+        startNewConversation(true);
+        await loadConversationsList();
+
+        deleteCompleteText.textContent = "All history cleared successfully.";
       }
-      await loadConversationsList();
-    } catch (e) {
-      alert("Error deleting conversation: " + e.message);
-    }
-  }
 
-  async function clearAllHistory() {
-    if (!confirm("Are you sure you want to permanently delete all conversations and uploaded media?")) return;
-    try {
-      await SupabaseStorage.clearAllStorage();
-      await TursoDB.clearAllHistory();
-      startNewConversation();
-      await loadConversationsList();
-    } catch (e) {
-      alert("Error clearing history: " + e.message);
+      // Transition to Complete state
+      deleteProcessView.style.display = "none";
+      deleteCompleteView.style.display = "flex";
+
+      setTimeout(() => {
+        closeDeleteModal();
+      }, 700);
+
+    } catch (err) {
+      alert("Deletion error: " + err.message);
+      closeDeleteModal();
     }
-  }
+  });
 
   // --- MESSAGE UI RENDERING ---
   function appendMessageUI(role, content, files = [], modelUsed = "", isStreaming = false, messageId = "", existingTranslation = "") {
@@ -476,11 +961,11 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     if (files && Array.isArray(files) && files.length > 0) {
       filesHtml = `<div class="message-attachments">`;
       files.forEach(f => {
-        if (!f || !f.url) return;
+        if (!f || (!f.url && !f.dataUrl)) return;
         const fileType = (f.type || "").toLowerCase();
         const fileName = (f.name || "attachment").toLowerCase();
         const safeName = escapeHtml(f.name || "attachment");
-        const safeUrl = f.url;
+        const safeUrl = f.url || f.dataUrl;
 
         const isImg = fileType.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)$/i.test(fileName);
         const isVideo = fileType.startsWith("video/") || /\.(mp4|webm|ogg|mov|mkv)$/i.test(fileName);
@@ -498,7 +983,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
         } else if (isVideo) {
           filesHtml += `
             <div class="attachment-video-card">
-              <video src="${safeUrl}" controls></video>
+              <video src="${safeUrl}" controls preload="metadata"></video>
               <a href="${safeUrl}" download="${safeName}" target="_blank" rel="noopener noreferrer" class="btn-attachment-download" title="Download ${safeName}">
                 <i class="fa-solid fa-arrow-down"></i>
               </a>
@@ -514,7 +999,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
                   <i class="fa-solid fa-arrow-down"></i>
                 </a>
               </div>
-              <audio src="${safeUrl}" controls></audio>
+              <audio src="${safeUrl}" controls preload="metadata"></audio>
             </div>
           `;
         } else {
@@ -534,12 +1019,14 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
       filesHtml += `</div>`;
     }
 
-    // Model Header at top
+    // Model Header at top with gemini-ai.svg
     if (role === "model") {
       const headerNode = document.createElement("div");
       headerNode.className = "model-row-header";
       headerNode.innerHTML = `
-        <div class="model-avatar-compact"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
+        <div class="model-avatar-compact">
+          <img src="gemini-ai.svg" alt="Gemini" class="gemini-icon model-avatar-icon" />
+        </div>
         <span class="model-name-label">Gemini</span>
       `;
       row.appendChild(headerNode);
@@ -550,16 +1037,24 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
 
     let renderedText = "";
     if (role === "model") {
-      try {
-        renderedText = content ? DOMPurify.sanitize(marked.parse(content)) : "";
-      } catch (e) {
-        renderedText = escapeHtml(content);
+      if (isStreaming && !content) {
+        renderedText = `
+          <div class="gemini-thinking-indicator">
+            <img src="gemini-ai.svg" alt="Gemini" class="gemini-icon gemini-spin-icon-md" />
+            <span>Thinking...</span>
+          </div>
+        `;
+      } else {
+        try {
+          renderedText = content ? DOMPurify.sanitize(marked.parse(content)) : "";
+        } catch (e) {
+          renderedText = escapeHtml(content);
+        }
       }
     } else {
       renderedText = escapeHtml(content);
     }
 
-    // Model Action & Attribution Footer strictly underneath answer
     let actionFooterHtml = "";
     if (role === "model") {
       actionFooterHtml = `
@@ -570,7 +1065,9 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
               <span>Translate to Farsi</span>
             </button>
           </div>
-          <div class="model-attribution">${modelUsed ? `<i class="fa-solid fa-sparkles"></i> ${escapeHtml(modelUsed)}` : ""}</div>
+          <div class="model-attribution">
+            ${modelUsed ? `<img src="gemini-ai.svg" alt="Gemini" class="gemini-icon model-attr-icon" /> <span>${escapeHtml(modelUsed)}</span>` : ""}
+          </div>
         </div>
       `;
     }
@@ -584,13 +1081,11 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
 
     setupCodeBlockHeaders(bubble);
 
-    // Render existing translation if present
     if (existingTranslation) {
       const slot = bubble.querySelector(".translation-container-slot");
       if (slot) renderTranslationBox(slot, existingTranslation);
     }
 
-    // Translate to Farsi button listener
     if (role === "model") {
       const btnTranslate = bubble.querySelector(".btn-translate-farsi");
       if (btnTranslate) {
@@ -630,10 +1125,21 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
   // --- TRANSLATE TO FARSI ACTION ---
   async function handleTranslateClick(bubble, rawContent, msgId, btnTranslate) {
     const slot = bubble.querySelector(".translation-container-slot");
-    if (!slot || !rawContent) return;
+    if (!slot) return;
 
     if (slot.innerHTML.trim().length > 0) {
       slot.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+
+    let textToTranslate = rawContent;
+    if (!textToTranslate || typeof textToTranslate !== "string" || !textToTranslate.trim()) {
+      const contentEl = bubble.querySelector(".message-content");
+      textToTranslate = contentEl ? (contentEl.innerText || contentEl.textContent || "") : "";
+    }
+
+    if (!textToTranslate || !textToTranslate.trim()) {
+      alert("No message content found to translate.");
       return;
     }
 
@@ -642,15 +1148,25 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     btnTranslate.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Translating...</span>`;
 
     try {
-      const activeModel = modelSelect.value || "gemini-2.5-flash";
-      const farsiTranslation = await GeminiAPI.translateToFarsi(rawContent, activeModel);
+      const activeModel = lockedModel || modelSelect.value || "gemini-2.5-flash";
+      const farsiTranslation = await GeminiAPI.translateToFarsi(textToTranslate, activeModel);
 
-      // Render Persian translation
       renderTranslationBox(slot, farsiTranslation);
 
-      // Persist in Turso Database
-      if (msgId) {
-        await TursoDB.updateMessageTranslation(msgId, farsiTranslation);
+      if (msgId && currentConversationId) {
+        const cached = getCachedMessages(currentConversationId);
+        if (cached) {
+          const m = cached.find(x => x.id === msgId);
+          if (m) m.translation = farsiTranslation;
+          saveCachedMessages(currentConversationId, cached);
+        }
+
+        SyncQueue.enqueue({
+          type: "UPDATE_TRANSLATION",
+          conversationId: currentConversationId,
+          messageId: msgId,
+          translation: farsiTranslation
+        });
       }
 
       btnTranslate.innerHTML = originalBtnHtml;
@@ -672,12 +1188,12 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     }
 
     slotElement.innerHTML = `
-      <div class="message-translation-box">
+      <div class="message-translation-box" dir="rtl">
         <div class="translation-header">
-          <span class="badge-translated"><i class="fa-solid fa-check"></i> ترجمه شده</span>
+          <span class="badge-translated"><i class="fa-solid fa-check"></i> ترجمه</span>
           <button class="btn-copy-translation" title="کپی ترجمه"><i class="fa-regular fa-copy"></i> کپی</button>
         </div>
-        <div class="translation-content">${sanitizedHtml}</div>
+        <div class="translation-content" dir="rtl">${sanitizedHtml}</div>
       </div>
     `;
 
@@ -688,7 +1204,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
       copyBtn.addEventListener("click", () => {
         const textToCopy = slotElement.querySelector(".translation-content").innerText;
         navigator.clipboard.writeText(textToCopy);
-        copyBtn.innerHTML = `<i class="fa-solid fa-check"></i> کپی شد!`;
+        copyBtn.innerHTML = `<i class="fa-solid fa-check"></i> کپی شد`;
         setTimeout(() => {
           copyBtn.innerHTML = `<i class="fa-regular fa-copy"></i> کپی`;
         }, 2000);
@@ -700,67 +1216,286 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     chatContainer.scrollTop = chatContainer.scrollHeight;
   }
 
-  // --- SEND MESSAGE & GEMINI STREAMING WORKFLOW ---
-  async function handleSendMessage() {
-    const prompt = chatTextarea.value.trim();
-    if ((!prompt && attachedFiles.length === 0) || isGenerating) return;
+  // =========================================================================
+  // AUDIO & VOICE INPUT RECORDING ENGINE
+  // =========================================================================
+  let isRecordingAudio = false;
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let mediaStream = null;
+  let speechRecognizer = null;
+  let baseTextBeforeRecording = "";
 
-    const selectedModel = modelSelect.value || "gemini-2.5-flash";
-    const isStreaming = localStorage.getItem("gemini_streaming_enabled") !== "false";
-
-    // 1. Ensure Conversation exists in Turso
-    const now = Date.now();
-    if (!currentConversationId) {
-      currentConversationId = "conv_" + now;
-      const title = prompt ? prompt.slice(0, 32) : (attachedFiles[0]?.name || "Media Chat");
-      await TursoDB.saveConversation(currentConversationId, title, now, now);
-      await loadConversationsList();
+  async function toggleAudioRecording() {
+    if (isRecordingAudio) {
+      stopAudioRecording();
     } else {
-      await TursoDB.updateConversationTime(currentConversationId, now);
+      await startAudioRecording();
+    }
+  }
+
+  async function startAudioRecording() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const hasGetUserMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+    if (!SpeechRecognition && !hasGetUserMedia) {
+      showNotification("Audio / Speech recording is not supported on this browser.", "warning", 4000);
+      return;
     }
 
-    // 2. Upload attachments to Supabase Storage
-    const uploadedMediaList = [];
-    const filesToPassToGemini = [...attachedFiles];
+    isRecordingAudio = true;
+    btnMic?.classList.add("recording");
+    if (btnMic) {
+      btnMic.title = "Stop recording (Listening...)";
+      btnMic.innerHTML = `<i class="fa-solid fa-stop"></i>`;
+    }
+    chatTextarea.placeholder = "Listening... Speak now...";
+    statusBadge.innerHTML = `<i class="fa-solid fa-microphone fa-beat" style="color: var(--danger-color);"></i> Listening...`;
+    statusBadge.classList.add("busy");
 
-    if (attachedFiles.length > 0) {
-      statusBadge.innerHTML = `<i class="fa-solid fa-cloud-arrow-up"></i> Uploading media...`;
-      statusBadge.classList.add("busy");
-      
-      for (const file of attachedFiles) {
-        const mediaObj = await SupabaseStorage.uploadFile(currentConversationId, file);
-        uploadedMediaList.push(mediaObj);
+    baseTextBeforeRecording = chatTextarea.value;
+    if (baseTextBeforeRecording && !baseTextBeforeRecording.endsWith(" ")) {
+      baseTextBeforeRecording += " ";
+    }
+
+    let recognitionStarted = false;
+
+    if (SpeechRecognition) {
+      try {
+        speechRecognizer = new SpeechRecognition();
+        speechRecognizer.continuous = true;
+        speechRecognizer.interimResults = true;
+        const isRtl = document.documentElement.getAttribute("dir") === "rtl";
+        speechRecognizer.lang = isRtl ? "fa-IR" : (navigator.language || "en-US");
+
+        speechRecognizer.onresult = (event) => {
+          let interimTranscript = "";
+          let finalTranscript = "";
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+              finalTranscript += event.results[i][0].transcript;
+            } else {
+              interimTranscript += event.results[i][0].transcript;
+            }
+          }
+          const recognizedText = (finalTranscript || interimTranscript).trim();
+          if (recognizedText) {
+            chatTextarea.value = (baseTextBeforeRecording + recognizedText).trim();
+            autoResizeTextarea();
+            toggleSendButton();
+          }
+        };
+
+        speechRecognizer.onerror = (e) => {
+          console.warn("Speech recognition note:", e.error);
+        };
+
+        speechRecognizer.onend = () => {
+          if (isRecordingAudio && speechRecognizer) {
+            try {
+              speechRecognizer.start();
+            } catch (e) {}
+          }
+        };
+
+        speechRecognizer.start();
+        recognitionStarted = true;
+      } catch (err) {
+        console.warn("Speech recognition initialization note:", err);
       }
     }
 
-    // 3. Render user message in UI and persist to Turso
-    const userMsgId = "msg_" + Date.now();
-    const filesJson = JSON.stringify(uploadedMediaList);
+    if (hasGetUserMedia) {
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioChunks = [];
 
-    appendMessageUI("user", prompt, uploadedMediaList, "", false, userMsgId);
-    await TursoDB.saveMessage(userMsgId, currentConversationId, "user", prompt, "", filesJson, now, "");
+        let mimeType = "";
+        if (typeof MediaRecorder !== "undefined") {
+          if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+            mimeType = "audio/webm;codecs=opus";
+          } else if (MediaRecorder.isTypeSupported("audio/webm")) {
+            mimeType = "audio/webm";
+          } else if (MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) {
+            mimeType = "audio/ogg;codecs=opus";
+          } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
+            mimeType = "audio/mp4";
+          }
+        }
 
-    currentMessages.push({ role: "user", content: prompt, files: filesJson, id: userMsgId });
+        if (typeof MediaRecorder !== "undefined") {
+          mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
 
-    // Clear input & attachments
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) {
+              audioChunks.push(e.data);
+            }
+          };
+
+          mediaRecorder.onstop = () => {
+            const actualType = mediaRecorder.mimeType || "audio/webm";
+            const audioBlob = new Blob(audioChunks, { type: actualType });
+
+            if (!chatTextarea.value.trim() && audioBlob.size > 800) {
+              const ext = actualType.includes("ogg") ? "ogg" : actualType.includes("mp4") ? "mp4" : "webm";
+              const audioFile = new File([audioBlob], `voice_recording_${Date.now()}.${ext}`, {
+                type: actualType,
+                lastModified: Date.now()
+              });
+              attachedFiles.push(audioFile);
+              renderAttachmentPreviews();
+            }
+
+            if (mediaStream) {
+              mediaStream.getTracks().forEach(t => t.stop());
+              mediaStream = null;
+            }
+            toggleSendButton();
+          };
+
+          mediaRecorder.start(250);
+        }
+      } catch (micErr) {
+        console.warn("Microphone access issue:", micErr);
+        if (!recognitionStarted) {
+          if (micErr.name === "NotAllowedError" || micErr.name === "PermissionDeniedError") {
+            showNotification("Microphone access was denied. Please allow microphone permissions in your browser.", "warning", 5000);
+          } else {
+            showNotification("Microphone error: " + (micErr.message || "Unable to access microphone"), "warning", 5000);
+          }
+          stopAudioRecording();
+        }
+      }
+    }
+  }
+
+  function stopAudioRecording() {
+    if (!isRecordingAudio) return;
+    isRecordingAudio = false;
+
+    btnMic?.classList.remove("recording");
+    if (btnMic) {
+      btnMic.title = "Voice input (Speech to text / Audio recording)";
+      btnMic.innerHTML = `<i class="fa-solid fa-microphone"></i>`;
+    }
+    chatTextarea.placeholder = "Type a message...";
+    statusBadge.innerHTML = `<i class="fa-solid fa-circle"></i> Ready`;
+    statusBadge.classList.remove("busy");
+
+    if (speechRecognizer) {
+      try {
+        speechRecognizer.onend = null;
+        speechRecognizer.stop();
+      } catch (e) {}
+      speechRecognizer = null;
+    }
+
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      try {
+        mediaRecorder.stop();
+      } catch (e) {}
+    } else if (mediaStream) {
+      mediaStream.getTracks().forEach(t => t.stop());
+      mediaStream = null;
+    }
+
+    toggleSendButton();
+  }
+
+  // =========================================================================
+  // OPTIMISTIC SEND MESSAGE & INSTANT AI DISPATCH
+  // =========================================================================
+  async function handleSendMessage() {
+    if (isRecordingAudio) {
+      stopAudioRecording();
+    }
+
+    const prompt = chatTextarea.value.trim();
+    if ((!prompt && attachedFiles.length === 0) || isGenerating) return;
+
+    const selectedModel = modelSelect.value || "auto";
+    const isStreaming = localStorage.getItem("gemini_streaming_enabled") !== "false";
+    const now = Date.now();
+
+    // 1. Instantly free input box
+    const filesToPassToGemini = [...attachedFiles];
     chatTextarea.value = "";
     attachedFiles = [];
     renderAttachmentPreviews();
     autoResizeTextarea();
-
-    // 4. Prepare UI for AI response
-    isGenerating = true;
     btnSend.disabled = true;
-    statusBadge.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Generating...`;
+
+    // 2. Prepare local attachments preview snapshots
+    const immediateUIFiles = [];
+    for (const f of filesToPassToGemini) {
+      const dataUrl = await SupabaseStorage.fileToDataUrl(f);
+      immediateUIFiles.push({
+        name: f.name,
+        type: f.type,
+        size: f.size,
+        dataUrl: dataUrl,
+        url: dataUrl,
+        uploaded: false
+      });
+    }
+
+    // 3. Initialize or update conversation
+    let convTitle = "";
+    if (!currentConversationId) {
+      currentConversationId = "conv_" + now;
+      convTitle = prompt ? prompt.slice(0, 32) : (filesToPassToGemini[0]?.name || "Media Chat");
+
+      const cachedConvs = getCachedConversations();
+      cachedConvs.unshift({ id: currentConversationId, title: convTitle, created_at: now, updated_at: now });
+      saveCachedConversations(cachedConvs);
+      renderConversationsDOM(cachedConvs);
+
+      navigateTo("#/chat/" + currentConversationId);
+
+      SyncQueue.enqueue({
+        type: "SAVE_CONV",
+        conversationId: currentConversationId,
+        title: convTitle,
+        createdAt: now,
+        updatedAt: now
+      });
+    } else {
+      SyncQueue.enqueue({
+        type: "UPDATE_CONV_TIME",
+        conversationId: currentConversationId,
+        updatedAt: now
+      });
+    }
+
+    // 4. Render User Message immediately
+    const userMsgId = "msg_" + now;
+    const filesJson = JSON.stringify(immediateUIFiles);
+
+    appendMessageUI("user", prompt, immediateUIFiles, "", false, userMsgId);
+    currentMessages.push({ role: "user", content: prompt, files: filesJson, id: userMsgId });
+    saveCachedMessages(currentConversationId, currentMessages);
+
+    SyncQueue.enqueue({
+      type: "SAVE_USER_MSG",
+      conversationId: currentConversationId,
+      messageId: userMsgId,
+      content: prompt,
+      files: immediateUIFiles,
+      createdAt: now
+    });
+
+    // 5. Kick off AI Generation with Spinning Gemini Icon
+    isGenerating = true;
+    statusBadge.innerHTML = `<img src="gemini-ai.svg" alt="Gemini" class="gemini-icon gemini-spin-icon" /> Generating...`;
     statusBadge.classList.add("busy");
     hideNotification();
 
-    const aiMsgId = "msg_" + Date.now();
+    const aiMsgId = "msg_" + (now + 1);
     const aiMessagePlaceholder = appendMessageUI("model", "", [], "", true, aiMsgId);
     const contentContainer = aiMessagePlaceholder.bubble.querySelector(".message-content");
 
     let finalAssistantText = "";
-    let actualModelUsed = selectedModel;
+    let actualModelUsed = lockedModel || selectedModel;
 
     try {
       const cleanHistoryForGemini = currentMessages.slice(0, -1).map(m => ({
@@ -770,6 +1505,7 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
 
       const result = await GeminiAPI.generate({
         selectedModel: selectedModel,
+        lockedModel: lockedModel,
         historyMessages: cleanHistoryForGemini,
         newPrompt: prompt,
         attachedFiles: filesToPassToGemini,
@@ -785,27 +1521,38 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
           scrollToBottom();
         },
         onFallbackNotice: (msg) => {
-          showNotification(msg, "warning");
+          showNotification(msg, "warning", 4000);
         }
       });
 
       finalAssistantText = result.text;
       actualModelUsed = result.modelUsed;
 
-      // Update muted attribution under the answer section
       const attr = aiMessagePlaceholder.bubble.querySelector(".model-attribution");
       if (attr && actualModelUsed) {
-        attr.innerHTML = `<i class="fa-solid fa-sparkles"></i> ${escapeHtml(actualModelUsed)}`;
+        attr.innerHTML = `<img src="gemini-ai.svg" alt="Gemini" class="gemini-icon model-attr-icon" /> <span>${escapeHtml(actualModelUsed)}</span>`;
       }
 
-      // Setup translation button click
       const btnTranslate = aiMessagePlaceholder.bubble.querySelector(".btn-translate-farsi");
       if (btnTranslate) {
         btnTranslate.addEventListener("click", () => handleTranslateClick(aiMessagePlaceholder.bubble, finalAssistantText, aiMsgId, btnTranslate));
       }
 
-      await TursoDB.saveMessage(aiMsgId, currentConversationId, "model", finalAssistantText, actualModelUsed, "[]", Date.now(), "");
+      // 6. Update local in-memory messages & cache
       currentMessages.push({ role: "model", content: finalAssistantText, model_used: actualModelUsed, id: aiMsgId });
+      saveCachedMessages(currentConversationId, currentMessages);
+
+      // 7. Queue model message save in background
+      SyncQueue.enqueue({
+        type: "SAVE_MODEL_MSG",
+        conversationId: currentConversationId,
+        messageId: aiMsgId,
+        content: finalAssistantText,
+        modelUsed: actualModelUsed,
+        filesJson: "[]",
+        createdAt: Date.now(),
+        translation: ""
+      });
 
     } catch (err) {
       contentContainer.innerHTML = `<span style="color: var(--danger-color);"><i class="fa-solid fa-circle-exclamation"></i> ${escapeHtml(err.message)}</span>`;
@@ -814,7 +1561,10 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
       btnSend.disabled = false;
       statusBadge.innerHTML = `<i class="fa-solid fa-circle"></i> Ready`;
       statusBadge.classList.remove("busy");
+      hideNotification();
       scrollToBottom();
+
+      SyncQueue.process();
     }
   }
 
@@ -873,14 +1623,22 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     btnSend.disabled = chatTextarea.value.trim().length === 0 && attachedFiles.length === 0;
   }
 
-  // --- NOTIFICATION BANNER ---
-  function showNotification(msg, type = "warning") {
+  // --- NOTIFICATION BANNER WITH AUTO-HIDE ---
+  function showNotification(msg, type = "warning", autoHideMs = 4000) {
+    if (notificationTimer) clearTimeout(notificationTimer);
     notificationBanner.className = `notification-banner ${type}`;
-    notificationBanner.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> <span>${escapeHtml(msg)}</span>`;
+    notificationBannerContent.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> <span>${escapeHtml(msg)}</span>`;
     notificationBanner.style.display = "flex";
+
+    if (autoHideMs > 0) {
+      notificationTimer = setTimeout(() => {
+        hideNotification();
+      }, autoHideMs);
+    }
   }
 
   function hideNotification() {
+    if (notificationTimer) clearTimeout(notificationTimer);
     notificationBanner.style.display = "none";
   }
 
@@ -903,21 +1661,35 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
   }
 
   // --- SETTINGS MODAL INTERACTIONS ---
-  btnOpenSettings.addEventListener("click", openSettingsModal);
-  btnCloseSettings.addEventListener("click", closeSettingsModal);
-  btnCancelSettings.addEventListener("click", closeSettingsModal);
+  btnOpenSettings.addEventListener("click", () => {
+    navigateTo("#/settings");
+  });
 
-  function openSettingsModal() {
+  btnCloseSettings.addEventListener("click", () => {
+    navigateTo(currentConversationId ? "#/chat/" + currentConversationId : "#/new");
+  });
+
+  btnCancelSettings.addEventListener("click", () => {
+    navigateTo(currentConversationId ? "#/chat/" + currentConversationId : "#/new");
+  });
+
+  function openSettingsModal(updateHash = true) {
     settingApiKeys.value = GeminiAPI.getApiKeys().join("\n");
     settingStreaming.checked = localStorage.getItem("gemini_streaming_enabled") !== "false";
     settingCaching.checked = localStorage.getItem("gemini_caching_enabled") !== "false";
     settingThemeToggle.checked = (document.documentElement.getAttribute("data-theme") || "dark") === "light";
     renderPrioritySettingsList();
     settingsModal.classList.add("open");
+    if (updateHash) {
+      navigateTo("#/settings");
+    }
   }
 
-  function closeSettingsModal() {
+  function closeSettingsModal(updateHash = true) {
     settingsModal.classList.remove("open");
+    if (updateHash) {
+      navigateTo(currentConversationId ? "#/chat/" + currentConversationId : "#/new");
+    }
   }
 
   btnSaveSettings.addEventListener("click", async () => {
@@ -925,22 +1697,24 @@ Connects UI, Gemini Fallback, Turso DB, Supabase Storage, Farsi Translation, & F
     localStorage.setItem("gemini_streaming_enabled", settingStreaming.checked ? "true" : "false");
     localStorage.setItem("gemini_caching_enabled", settingCaching.checked ? "true" : "false");
     applyTheme(settingThemeToggle.checked ? "light" : "dark");
-    closeSettingsModal();
-    await refreshModelsList(true);
+    closeSettingsModal(true);
+    await refreshModelsList();
   });
 
-  btnRefreshModels.addEventListener("click", async () => {
+  btnRefreshModels.addEventListener("click", async (e) => {
+    e.stopPropagation();
     localStorage.setItem("gemini_api_keys", settingApiKeys.value.trim());
-    await refreshModelsList(true);
+    await refreshModelsList();
   });
 
   // --- GENERAL BUTTON LISTENERS ---
-  btnNewChat.addEventListener("click", startNewConversation);
-  btnHeaderNewChat.addEventListener("click", startNewConversation);
-  btnClearAllHistory.addEventListener("click", clearAllHistory);
+  btnNewChat.addEventListener("click", () => startNewConversation(true));
+  btnHeaderNewChat.addEventListener("click", () => startNewConversation(true));
+  btnClearAllHistory.addEventListener("click", promptClearAll);
   btnThemeToggle.addEventListener("click", toggleTheme);
   btnRTLToggle.addEventListener("click", toggleDirection);
   btnHeaderRTL.addEventListener("click", toggleDirection);
+  btnMic.addEventListener("click", toggleAudioRecording);
   btnSend.addEventListener("click", handleSendMessage);
 
   function escapeHtml(str) {
