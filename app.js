@@ -1506,6 +1506,23 @@ voice recording, background synchronization, and minimal UI feedback windows.
 
     let finalAssistantText = "";
     let actualModelUsed = lockedModel || selectedModel;
+    let hasScrolledToHeader = false;
+
+    function scrollToHeader() {
+      if (hasScrolledToHeader) return;
+      hasScrolledToHeader = true;
+
+      const targetElement = aiMessagePlaceholder.headerNode || aiMessagePlaceholder.row;
+      if (targetElement && chatContainer) {
+        const rect = targetElement.getBoundingClientRect();
+        const containerRect = chatContainer.getBoundingClientRect();
+        const offsetTop = rect.top - containerRect.top + chatContainer.scrollTop;
+        chatContainer.scrollTo({
+          top: Math.max(0, offsetTop - 12),
+          behavior: "smooth"
+        });
+      }
+    }
 
     try {
       const cleanHistoryForGemini = currentMessages.slice(0, -1).map(m => ({
@@ -1534,6 +1551,9 @@ voice recording, background synchronization, and minimal UI feedback windows.
             contentContainer.textContent = fullText;
           }
           setupCodeBlockHeaders(contentContainer);
+
+          // Smoothly align Gemini logo right beneath top header once
+          scrollToHeader();
         },
         onFallbackNotice: (msg) => {
           showNotification(msg, "warning", 3000);
@@ -1547,6 +1567,8 @@ voice recording, background synchronization, and minimal UI feedback windows.
       if (!aiMessagePlaceholder.row.querySelector(".model-row-header") && aiMessagePlaceholder.headerNode) {
         aiMessagePlaceholder.row.insertBefore(aiMessagePlaceholder.headerNode, aiMessagePlaceholder.bubble);
       }
+
+      scrollToHeader();
 
       // Show minimal Translate action
       if (actionBar) {
